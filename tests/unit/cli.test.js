@@ -45,9 +45,13 @@ function startServer(handlers) {
 }
 
 async function run(baseUrl, ...args) {
+  return runWithEnv(baseUrl, {}, ...args);
+}
+
+async function runWithEnv(baseUrl, extraEnv, ...args) {
   try {
     const { stdout, stderr } = await execFileAsync('node', [CLI, ...args], {
-      env: { ...process.env, CAMOFOX_URL: baseUrl, CAMOFOX_USER: 'testuser', CAMOFOX_SESSION: 'default' },
+      env: { ...process.env, CAMOFOX_URL: baseUrl, CAMOFOX_USER: 'testuser', CAMOFOX_SESSION: 'default', ...extraEnv },
       timeout: 5000,
     });
     return { stdout: stdout.trim(), stderr: stderr.trim(), code: 0 };
@@ -131,6 +135,48 @@ describe('CLI', () => {
       const r = await run(srv.url, 'open');
       expect(r.code).not.toBe(0);
       expect(r.stderr).toContain('Usage');
+    });
+
+    test('start warms the browser', async () => {
+      const handlers = {
+        ...defaultHandlers(),
+        'POST /start': () => ({ ok: true, profile: 'camoufox' }),
+      };
+      srv = await startServer(handlers);
+      const r = await run(srv.url, 'start');
+      expect(r.stdout).toContain('Browser started');
+    });
+
+    test('stop requires admin key', async () => {
+      srv = await startServer(defaultHandlers());
+      const r = await run(srv.url, 'stop');
+      expect(r.code).not.toBe(0);
+      expect(r.stderr).toContain('CAMOFOX_ADMIN_KEY');
+    });
+
+    test('stop sends admin key header', async () => {
+      let capturedHeaders;
+      const handlers = {
+        ...defaultHandlers(),
+      };
+      const server = createServer((req, res) => {
+        const url = new URL(req.url, 'http://localhost');
+        if (req.method === 'POST' && url.pathname === '/stop') {
+          capturedHeaders = req.headers;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, stopped: true }));
+          return;
+        }
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found' }));
+      });
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      const port = server.address().port;
+      srv = { server, port, url: `http://127.0.0.1:${port}` };
+
+      const r = await runWithEnv(srv.url, { CAMOFOX_ADMIN_KEY: 'secret123' }, 'stop');
+      expect(r.stdout).toContain('Browser stopped');
+      expect(capturedHeaders['x-admin-key']).toBe('secret123');
     });
   });
 

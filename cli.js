@@ -3,15 +3,16 @@
 const BASE = process.env.CAMOFOX_URL || 'http://127.0.0.1:9377';
 const USER = process.env.CAMOFOX_USER || 'cli';
 const SESSION = process.env.CAMOFOX_SESSION || 'default';
+const ADMIN_KEY = process.env.CAMOFOX_ADMIN_KEY || '';
 
 const SESSION_COMMANDS = new Set([
-  'open', 'tabs', 'health', 'close-session', 'transcript', 'help',
+  'open', 'tabs', 'health', 'close-session', 'transcript', 'start', 'stop', 'help',
 ]);
 
 // ── HTTP helper ──────────────────────────────────────────────────────────────
 
-async function api(method, path, body) {
-  const opts = { method, headers: {} };
+async function api(method, path, body, extraHeaders) {
+  const opts = { method, headers: { ...extraHeaders } };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
@@ -116,6 +117,17 @@ async function cmdTranscript(args) {
   const data = await api('POST', '/youtube/transcript', { url });
   process.stdout.write(data.transcript || '');
   if (data.transcript && !data.transcript.endsWith('\n')) process.stdout.write('\n');
+}
+
+async function cmdStart() {
+  const data = await api('POST', '/start');
+  console.log('Browser started');
+}
+
+async function cmdStop() {
+  if (!ADMIN_KEY) throw new Error('CAMOFOX_ADMIN_KEY env var required for stop');
+  const data = await api('POST', '/stop', undefined, { 'x-admin-key': ADMIN_KEY });
+  console.log('Browser stopped');
 }
 
 // ── Tab commands ─────────────────────────────────────────────────────────────
@@ -238,6 +250,8 @@ Session commands:
   open <url>                 Open new tab, prints tab index
   tabs                       List open tabs
   health                     Server health check
+  start                      Start/warm the browser
+  stop                       Stop the browser (needs CAMOFOX_ADMIN_KEY)
   transcript <youtube-url>   Extract YouTube transcript
   close-session              Close entire session
 
@@ -268,7 +282,8 @@ Tab ID formats:
 Environment:
   CAMOFOX_URL         Server URL (default: http://127.0.0.1:9377)
   CAMOFOX_USER        User ID (default: cli)
-  CAMOFOX_SESSION     Session key (default: default)`);
+  CAMOFOX_SESSION     Session key (default: default)
+  CAMOFOX_ADMIN_KEY   Admin key (required for stop command)`);
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -291,6 +306,8 @@ async function main() {
       case 'health': return cmdHealth();
       case 'close-session': return cmdCloseSession();
       case 'transcript': return cmdTranscript(rest);
+      case 'start': return cmdStart();
+      case 'stop': return cmdStop();
       case 'help': return printHelp();
     }
   }
