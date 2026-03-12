@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn } from 'child_process';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { randomBytes as cryptoRandomBytes } from 'crypto';
+import { homedir } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.CAMOFOX_URL || 'http://127.0.0.1:9377';
@@ -11,6 +14,21 @@ const SESSION = process.env.CAMOFOX_SESSION || 'default';
 const ADMIN_KEY = process.env.CAMOFOX_ADMIN_KEY || '';
 const CONTAINER_NAME = 'camofox';
 const CONTAINER_PORT = parseInt(new URL(BASE).port || '9377', 10);
+const KEY_FILE = join(homedir(), '.camofox', 'api-key');
+
+function readApiKey() {
+  if (process.env.CAMOFOX_API_KEY) return process.env.CAMOFOX_API_KEY;
+  try { return readFileSync(KEY_FILE, 'utf8').trim(); } catch { return ''; }
+}
+
+function ensureApiKey() {
+  const existing = readApiKey();
+  if (existing) return existing;
+  const key = cryptoRandomBytes(32).toString('hex');
+  mkdirSync(dirname(KEY_FILE), { recursive: true });
+  writeFileSync(KEY_FILE, key + '\n', { mode: 0o600 });
+  return key;
+}
 
 const TAB_COMMANDS = new Set([
   'snapshot', 'screenshot', 'goto', 'click', 'type', 'press', 'scroll',
@@ -140,6 +158,81 @@ async function cmdStop() {
   console.log('Browser stopped');
 }
 
+// ── Cookie import from curl ──────────────────────────────────────────────────
+
+function parseCurlCookies(curlText) {
+  // Extract the URL to get the domain
+  const urlMatch = curlText.match(/curl\s+'([^']+)'/) || curlText.match(/curl\s+"([^"]+)"/) || curlText.match(/curl\s+(\S+)/);
+  if (!urlMatch) throw new Error('Could not find URL in curl command');
+  const domain = new URL(urlMatch[1]).hostname;
+
+  // Extract cookie string from -b or --cookie flag (single-quoted, double-quoted, or unquoted)
+  const cookieMatch = curlText.match(/(?:-b|--cookie)\s+'([^']*)'/) ||
+                      curlText.match(/(?:-b|--cookie)\s+"([^"]*)"/) ||
+                      curlText.match(/(?:-b|--cookie)\s+(\S+)/);
+  if (!cookieMatch) throw new Error('No -b/--cookie flag found in curl command');
+
+  const cookieStr = cookieMatch[1];
+  const cookies = [];
+  for (const pair of cookieStr.split(/;\s*/)) {
+    const eq = pair.indexOf('=');
+    if (eq < 1) continue;
+    const name = pair.slice(0, eq).trim();
+    const value = pair.slice(eq + 1).trim();
+    cookies.push({ name, value, domain: `.${domain.replace(/^\./, '')}`, path: '/' });
+  }
+  return cookies;
+}
+
+async function cmdCookies(args) {
+  let curlText;
+  if (args.length) {
+    // Inline argument: camofox cookies curl '...' -b '...'
+    curlText = args.join(' ').trim();
+  } else if (!process.stdin.isTTY) {
+    // Piped: pbpaste | camofox cookies
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    curlText = Buffer.concat(chunks).toString('utf8').trim();
+  } else {
+    // Interactive: prompt user to paste
+    const readline = await import('readline');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+    console.error('Paste a "Copy as cURL" command, then press Enter twice:');
+    const lines = [];
+    curlText = await new Promise((resolve) => {
+      let blankCount = 0;
+      rl.on('line', (line) => {
+        if (line.trim() === '') {
+          blankCount++;
+          if (blankCount >= 1 && lines.length > 0) {
+            rl.close();
+            resolve(lines.join('\n'));
+          }
+        } else {
+          blankCount = 0;
+          lines.push(line);
+        }
+      });
+      rl.on('close', () => resolve(lines.join('\n')));
+    });
+    curlText = curlText.trim();
+  }
+  if (!curlText || !curlText.startsWith('curl')) {
+    throw new Error('Input does not contain a curl command.\n\nCopy a request as cURL from Chrome DevTools, then run: camofox cookies');
+  }
+
+  const cookies = parseCurlCookies(curlText);
+  if (!cookies.length) throw new Error('No cookies found in curl command');
+
+  const headers = {};
+  const apiKey = readApiKey();
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+  const data = await api('POST', `/sessions/${encodeURIComponent(USER)}/cookies`, { cookies }, headers);
+  console.log(`${data.count} cookies imported for ${USER}`);
+}
+
 // ── Docker serve ─────────────────────────────────────────────────────────────
 
 function dockerImageExists() {
@@ -200,10 +293,11 @@ async function cmdServe(args) {
     dockerBuild();
   }
 
-  // Pass through relevant env vars
+  // Pass through relevant env vars (auto-generate API key if none set)
+  const apiKey = ensureApiKey();
   const envFlags = [];
   if (ADMIN_KEY) envFlags.push('-e', `CAMOFOX_ADMIN_KEY=${ADMIN_KEY}`);
-  if (process.env.CAMOFOX_API_KEY) envFlags.push('-e', `CAMOFOX_API_KEY=${process.env.CAMOFOX_API_KEY}`);
+  envFlags.push('-e', `CAMOFOX_API_KEY=${apiKey}`);
   if (process.env.PROXY_HOST) {
     envFlags.push('-e', `PROXY_HOST=${process.env.PROXY_HOST}`);
     if (process.env.PROXY_PORT) envFlags.push('-e', `PROXY_PORT=${process.env.PROXY_PORT}`);
@@ -317,9 +411,32 @@ async function cmdImages(tabId) {
   }
 }
 
-async function cmdDownloads(tabId) {
-  const data = await api('GET', `/tabs/${tabId}/downloads?userId=${encodeURIComponent(USER)}`);
-  console.log(JSON.stringify(data.downloads || [], null, 2));
+async function cmdDownloads(tabId, args) {
+  const dest = args[0]; // optional directory to save files to
+  const includeData = dest ? 'true' : 'false';
+  const data = await api('GET', `/tabs/${tabId}/downloads?userId=${encodeURIComponent(USER)}&includeData=${includeData}&consume=false`);
+  const downloads = data.downloads || [];
+
+  if (!dest) {
+    // List mode: just print metadata
+    console.log(JSON.stringify(downloads, null, 2));
+    return;
+  }
+
+  // Save mode: write files to destination directory
+  mkdirSync(dest, { recursive: true });
+  let saved = 0;
+  for (const dl of downloads) {
+    if (dl.failure || !dl.dataBase64) {
+      if (dl.failure) console.error(`Skipped ${dl.suggestedFilename}: ${dl.failure}`);
+      continue;
+    }
+    const filePath = join(dest, dl.suggestedFilename);
+    writeFileSync(filePath, Buffer.from(dl.dataBase64, 'base64'));
+    console.log(filePath);
+    saved++;
+  }
+  if (!saved) console.error('No downloads to save');
 }
 
 async function cmdEval(tabId, args) {
@@ -352,6 +469,7 @@ Commands:
   tabs           List open tabs
   health         Server health check
   close-session  Close all tabs for current user
+  cookies        Import cookies from a "Copy as cURL" command
 
   snapshot       Page accessibility tree
   screenshot     Save screenshot
@@ -417,6 +535,22 @@ Example:
   'close-session': `Usage: camofox close-session
 
 Close all tabs for the current user (CAMOFOX_USER).`,
+
+  cookies: `Usage: camofox cookies [curl command...]
+
+Import cookies from a Chrome "Copy as cURL" command.
+
+Three ways to provide input:
+  camofox cookies                  Reads from clipboard (pbpaste)
+  pbpaste | camofox cookies        Reads from stdin
+  camofox cookies curl '...' ...   Inline argument
+
+Steps:
+  1. Open Chrome DevTools → Network tab
+  2. Right-click any request to the target site → Copy → Copy as cURL
+  3. Run: camofox cookies
+
+The domain is extracted from the curl URL automatically.`,
 
   snapshot: `Usage: camofox snapshot <tab>
 
@@ -501,9 +635,20 @@ Extract all links on the page. Prints URL and link text.`,
 
 Extract all images on the page. Prints src and alt text.`,
 
-  downloads: `Usage: camofox downloads <tab>
+  downloads: `Usage: camofox downloads <tab> [directory]
 
-List captured downloads for the tab as JSON.`,
+List or save captured downloads for a tab.
+
+Without a directory, prints download metadata as JSON.
+With a directory, saves all downloaded files there.
+
+Examples:
+  camofox downloads 0              List downloads as JSON
+  camofox downloads 0 ./pdfs       Save files to ./pdfs/
+
+Downloads are captured automatically when the browser triggers a file
+download (e.g., clicking a PDF link). Use "camofox click" to trigger
+the download first, then "camofox downloads" to retrieve it.`,
 
   eval: `Usage: camofox eval <tab> <js-expression>
 
@@ -570,6 +715,7 @@ async function main() {
     case 'tabs': return cmdTabs();
     case 'health': return cmdHealth();
     case 'close-session': return cmdCloseSession();
+    case 'cookies': return cmdCookies(args.slice(1));
     case 'transcript': return cmdTranscript(args.slice(1));
     case 'start': return cmdStart();
     case 'stop': return cmdStop();
@@ -595,7 +741,7 @@ async function main() {
       case 'wait': return cmdWait(tabId);
       case 'links': return cmdLinks(tabId);
       case 'images': return cmdImages(tabId);
-      case 'downloads': return cmdDownloads(tabId);
+      case 'downloads': return cmdDownloads(tabId, rest);
       case 'eval': return cmdEval(tabId, rest);
       case 'close': return cmdClose(tabId);
       case 'stats': return cmdStats(tabId);
