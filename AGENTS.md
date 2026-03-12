@@ -1,99 +1,131 @@
-# camofox-browser Agent Guide
+# camofox Agent Guide
 
-Headless browser automation server for AI agents. Run locally or deploy to any cloud provider.
+Anti-detection browser automation for AI agents, powered by Camoufox.
 
-## Quick Start for Agents
+## Quick Start
 
 ```bash
-# Install and start
-npm install && npm start
-# Server runs on http://localhost:9377
+camofox serve -d                          # start server (Docker, background)
+camofox open https://example.com          # → 0
+camofox snapshot 0                        # get page with element refs
+camofox click 0 e1                        # interact using refs
+camofox close 0                           # clean up
 ```
+
+Or start the server without Docker:
+
+```bash
+npm install && npm start                  # server on http://localhost:9377
+```
+
+## CLI Reference
+
+### Server
+
+```bash
+camofox serve              # start via Docker (foreground)
+camofox serve -d           # start detached (background)
+camofox serve stop         # stop the container
+camofox serve status       # check if running
+camofox serve build        # rebuild image
+```
+
+### Session Commands
+
+```bash
+camofox open <url>                    # open tab, prints index
+camofox tabs                          # list open tabs
+camofox health                        # server health check
+camofox start                         # warm up browser engine
+camofox stop                          # stop browser (needs CAMOFOX_ADMIN_KEY)
+camofox transcript <youtube-url>      # extract YouTube captions
+camofox close-session                 # close all tabs for current user
+```
+
+### Tab Commands
+
+All tab commands: `camofox <command> <tab> [args...]`
+
+```bash
+camofox snapshot <tab>                # accessibility tree with element refs
+camofox screenshot <tab> [file]       # PNG screenshot (file or stdout)
+camofox goto <tab> <url>              # navigate to URL
+camofox click <tab> <ref>             # click element (e.g. e1)
+camofox type <tab> <ref> <text>       # type into element
+camofox press <tab> <key>             # press key (Enter, Tab, Escape, etc.)
+camofox scroll <tab> [dir] [px]       # scroll (down|up, default: down 500)
+camofox back <tab>                    # browser back
+camofox forward <tab>                 # browser forward
+camofox refresh <tab>                 # reload page
+camofox wait <tab>                    # wait for page ready
+camofox links <tab>                   # extract all links
+camofox images <tab>                  # extract all images
+camofox downloads <tab>               # captured downloads (JSON)
+camofox eval <tab> <js>               # execute JavaScript
+camofox close <tab>                   # close tab
+camofox stats <tab>                   # tab statistics (JSON)
+```
+
+### Tab Identifiers
+
+Tabs can be referenced by index (`0`), domain (`example.com`), or UUID prefix (`4e9d`).
+
+Indices shift when tabs are closed. Prefer domain or UUID prefix in multi-step workflows.
 
 ## Core Workflow
 
-1. **Create a tab** → Get `tabId`
-2. **Navigate** → Go to URL or use search macro
-3. **Get snapshot** → Receive page content with element refs (`e1`, `e2`, etc.)
-4. **Interact** → Click/type using refs
-5. **Repeat** steps 3-4 as needed
+1. `camofox open <url>` → get tab index
+2. `camofox snapshot <tab>` → read page, note element refs (`e1`, `e2`, ...)
+3. `camofox click <tab> <ref>` or `camofox type <tab> <ref> <text>` → interact
+4. Repeat steps 2-3 as needed
+5. `camofox close <tab>` → clean up
 
-## API Reference
+Refs reset on navigation — always re-snapshot after navigating.
 
-### Create Tab
-```bash
-POST /tabs
-{"userId": "agent1", "sessionKey": "task1", "url": "https://example.com"}
-```
-Returns: `{"tabId": "abc123", "url": "...", "title": "..."}`
+## REST API
 
-### Navigate
-```bash
-POST /tabs/:tabId/navigate
-{"userId": "agent1", "url": "https://google.com"}
-# Or use macro:
-{"userId": "agent1", "macro": "@google_search", "query": "weather today"}
-```
+The CLI wraps the REST API. Agents can also call the API directly at `http://localhost:9377`.
 
-### Get Snapshot
-```bash
-GET /tabs/:tabId/snapshot?userId=agent1
-```
-Returns accessibility tree with refs:
-```
-[heading] Example Domain
-[paragraph] This domain is for use in examples.
-[link e1] More information...
-```
+### Tab Lifecycle
 
-### Click Element
-```bash
-POST /tabs/:tabId/click
-{"userId": "agent1", "ref": "e1"}
-# Or CSS selector:
-{"userId": "agent1", "selector": "button.submit"}
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/tabs` | Create tab: `{"userId", "sessionKey", "url"}` → `{"tabId"}` |
+| `GET` | `/tabs?userId=X` | List open tabs |
+| `DELETE` | `/tabs/:id` | Close tab |
+| `DELETE` | `/sessions/:userId` | Close all tabs for a user |
 
-### Type Text
-```bash
-POST /tabs/:tabId/type
-{"userId": "agent1", "ref": "e2", "text": "hello world"}
-# Add enter: {"userId": "agent1", "ref": "e2", "text": "search query", "pressEnter": true}
-```
+### Page Interaction
 
-### Scroll
-```bash
-POST /tabs/:tabId/scroll
-{"userId": "agent1", "direction": "down", "amount": 500}
-```
+| Method | Endpoint | Body / Query |
+|--------|----------|-------------|
+| `GET` | `/tabs/:id/snapshot?userId=X` | `includeScreenshot=true`, `offset=N` |
+| `POST` | `/tabs/:id/click` | `{"userId", "ref"}` or `{"userId", "selector"}` |
+| `POST` | `/tabs/:id/type` | `{"userId", "ref", "text", "pressEnter": true}` |
+| `POST` | `/tabs/:id/press` | `{"userId", "key"}` |
+| `POST` | `/tabs/:id/scroll` | `{"userId", "direction", "amount"}` |
+| `POST` | `/tabs/:id/navigate` | `{"userId", "url"}` or `{"userId", "macro", "query"}` |
+| `POST` | `/tabs/:id/back` | `{"userId"}` |
+| `POST` | `/tabs/:id/forward` | `{"userId"}` |
+| `POST` | `/tabs/:id/refresh` | `{"userId"}` |
+| `POST` | `/tabs/:id/wait` | `{"userId"}` |
+| `GET` | `/tabs/:id/links?userId=X` | Extract all links |
+| `GET` | `/tabs/:id/images?userId=X` | `includeData=true`, `limit=N` |
+| `GET` | `/tabs/:id/downloads?userId=X` | `includeData=true`, `consume=true` |
+| `GET` | `/tabs/:id/screenshot?userId=X` | PNG binary |
+| `POST` | `/tabs/:id/evaluate` | `{"userId", "expression"}` |
 
-### Navigation
-```bash
-POST /tabs/:tabId/back     {"userId": "agent1"}
-POST /tabs/:tabId/forward  {"userId": "agent1"}
-POST /tabs/:tabId/refresh  {"userId": "agent1"}
-```
+### Search Macros
 
-### Get Links
-```bash
-GET /tabs/:tabId/links?userId=agent1&limit=50
-```
-
-### Close Tab
-```bash
-DELETE /tabs/:tabId?userId=agent1
-```
-
-## Search Macros
-
-Use these instead of constructing URLs:
+Use with the navigate endpoint instead of constructing URLs:
 
 | Macro | Site |
 |-------|------|
 | `@google_search` | Google |
 | `@youtube_search` | YouTube |
 | `@amazon_search` | Amazon |
-| `@reddit_search` | Reddit |
+| `@reddit_search` | Reddit (JSON) |
+| `@reddit_subreddit` | Subreddit (JSON) |
 | `@wikipedia_search` | Wikipedia |
 | `@twitter_search` | Twitter/X |
 | `@yelp_search` | Yelp |
@@ -101,62 +133,70 @@ Use these instead of constructing URLs:
 
 ## Element Refs
 
-Refs like `e1`, `e2` are stable identifiers for page elements:
+Snapshots include refs like `e1`, `e2` — stable identifiers for interactive elements.
 
-1. Call `/snapshot` to get current refs
-2. Use ref in `/click` or `/type`
-3. Refs reset on navigation - get new snapshot after
+- Get refs from `snapshot`
+- Use refs with `click`, `type`
+- Refs reset on navigation — re-snapshot after each page change
 
 ## Session Management
 
-- `userId` isolates cookies/storage between users
-- `sessionKey` groups tabs by conversation/task (legacy: `listItemId` also accepted)
+- `CAMOFOX_USER` isolates cookies/storage between users
+- `CAMOFOX_SESSION` groups tabs by conversation/task
 - Sessions timeout after 30 minutes of inactivity
-- Delete all user data: `DELETE /sessions/:userId`
+- Browser shuts down after 5 minutes with no sessions, relaunches on next request
 
-## Running Engines
+## Environment Variables
 
-### Camoufox (Default)
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CAMOFOX_URL` | Server URL (CLI) | `http://127.0.0.1:9377` |
+| `CAMOFOX_USER` | User ID | `cli` |
+| `CAMOFOX_SESSION` | Session key | `default` |
+| `CAMOFOX_ADMIN_KEY` | Admin key for stop | - |
+| `CAMOFOX_API_KEY` | Cookie import auth | - |
+| `PROXY_HOST` | Proxy hostname | - |
+| `PROXY_PORT` | Proxy port | - |
+| `PROXY_USERNAME` | Proxy auth user | - |
+| `PROXY_PASSWORD` | Proxy auth pass | - |
+
+## Scripting
+
+Tab indices are printed to stdout for capture:
+
 ```bash
-npm start
-# Or: ./run.sh
+TAB=$(camofox open https://example.com)
+camofox snapshot $TAB
+camofox close $TAB
 ```
-Firefox-based with anti-detection. Bypasses Google captcha.
 
 ## Testing
 
 ```bash
-npm test              # E2E tests
-npm run test:live     # Live Google tests
-npm run test:debug    # With server output
-```
-
-## Docker
-
-```bash
-docker build -t camofox-browser .
-docker run -p 9377:9377 camofox-browser
+npm test              # all tests
+npm run test:e2e      # e2e tests only
+npm run test:live     # live site tests
+npm run test:debug    # with server output
 ```
 
 ## Key Files
 
-- `server.js` - Camoufox engine (routes + browser logic only — NO `process.env` or `child_process`)
+- `cli.js` - CLI wrapper (all commands)
+- `server.js` - Express server + browser logic
 - `lib/config.js` - All `process.env` reads centralized here
-- `lib/youtube.js` - YouTube transcript extraction via yt-dlp (`child_process` isolated here)
-- `lib/launcher.js` - Subprocess spawning (`child_process` isolated here)
-- `lib/cookies.js` - Cookie file I/O
-- `lib/snapshot.js` - Accessibility tree snapshot
+- `lib/snapshot.js` - Accessibility tree snapshots
 - `lib/macros.js` - Search macro URL expansion
+- `lib/downloads.js` - Download capture and image extraction
+- `lib/youtube.js` - YouTube transcript extraction via yt-dlp
+- `lib/cookies.js` - Cookie file I/O
 - `Dockerfile` - Production container
 
 ## OpenClaw Scanner Isolation (CRITICAL)
 
-OpenClaw's skill-scanner flags plugins that have `process.env` + network calls (e.g. `app.post`, `fetch`, `http.request`) in the same file, or `child_process` + network calls in the same file. These patterns suggest potential credential exfiltration.
+OpenClaw's skill-scanner flags plugins that have `process.env` + network calls or `child_process` + network calls in the same file.
 
 **Rule: No single `.js` file may contain both halves of a scanner rule pair:**
 - `process.env` lives ONLY in `lib/config.js`
-- `child_process` / `execFile` / `spawn` live ONLY in `lib/youtube.js` and `lib/launcher.js`
-- `server.js` has the Express routes (`app.post`, `app.get`) but ZERO `process.env` reads and ZERO `child_process` imports
-- When adding new features that need env vars or subprocesses, put that code in a `lib/` module and import the result into `server.js`
-
-This was broken in 1.3.0 when the YouTube transcript feature added `child_process` + `process.env` directly to `server.js`, and fixed in 1.3.1.
+- `child_process` / `execFile` / `spawn` live ONLY in `lib/youtube.js`, `lib/launcher.js`, and `cli.js`
+- `server.js` has Express routes but ZERO `process.env` reads and ZERO `child_process` imports
+- When adding features that need env vars or subprocesses, put that code in a `lib/` module

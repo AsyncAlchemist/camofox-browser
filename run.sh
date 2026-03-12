@@ -3,7 +3,7 @@
 # Usage: ./run.sh [-p port]
 # Example: ./run.sh -p 3001
 
-CAMOFOX_PORT=3000
+CAMOFOX_PORT=9377
 while getopts "p:" opt; do
   case $opt in
     p) CAMOFOX_PORT="$OPTARG" ;;
