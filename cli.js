@@ -103,11 +103,11 @@ async function cmdOpen(args) {
 async function cmdTabs() {
   const tabs = await listTabs();
   if (!tabs.length) { console.log('No open tabs'); return; }
-  const header = `${'#'.padStart(3)}  ${'TAB ID'.padEnd(10)}  URL`;
+  const header = `${'#'.padStart(3)}  ${'TAB ID'.padEnd(36)}  URL`;
   console.log(header);
   console.log('-'.repeat(header.length + 40));
   tabs.forEach((t, i) => {
-    console.log(`${String(i).padStart(3)}  ${t.tabId.slice(0, 8)}..  ${t.url || '(blank)'}`);
+    console.log(`${String(i).padStart(3)}  ${t.tabId.padEnd(36)}  ${t.url || '(blank)'}`);
   });
 }
 
@@ -606,6 +606,11 @@ async function main() {
 }
 
 main().catch(err => {
-  console.error(err.message);
+  if (err.cause?.code === 'ECONNREFUSED' || err.message === 'fetch failed') {
+    console.error(`Cannot connect to camofox server at ${BASE}`);
+    console.error(`\nStart the server with:\n  camofox serve -d\n`);
+  } else {
+    console.error(err.message);
+  }
   process.exit(1);
 });
