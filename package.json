@@ -4,6 +4,9 @@
   "description": "Headless browser automation server and OpenClaw plugin for AI agents - anti-detection, element refs, and session isolation",
   "type": "module",
   "main": "server.js",
+  "bin": {
+    "camofox": "./cli.js"
+  },
   "license": "MIT",
   "author": "Jo Inc <oss@askjo.ai>",
   "homepage": "https://github.com/jo-inc/camofox-browser#readme",
@@ -36,6 +39,7 @@
   },
   "files": [
     "server.js",
+    "cli.js",
     "lib/",
     "plugin.ts",
     "openclaw.plugin.json",
