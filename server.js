@@ -1236,7 +1236,6 @@ async function getSession(userId, { trace = false } = {}) {
       const b = await ensureBrowser();
       const contextOptions = {
         viewport: { width: 1280, height: 720 },
-        permissions: ['geolocation'],
       };
       // Playwright context-level locale/timezone OVERRIDE Camoufox's browser-level
       // config, so set them here from env to stay coherent (e.g. CAMOFOX_LOCALE=es-AR
@@ -1245,7 +1244,14 @@ async function getSession(userId, { trace = false } = {}) {
       if (!CONFIG.proxy.host) {
         contextOptions.locale = SPOOF_LOCALE || 'en-US';
         contextOptions.timezoneId = process.env.TZ || 'America/Los_Angeles';
-        contextOptions.geolocation = parseGeolocation() || { latitude: 37.7749, longitude: -122.4194 };
+        // Only spoof geolocation (and grant the permission) when coords are
+        // configured. Granting geolocation globally by default is a bot tell:
+        // real browsers report 'prompt' until the user allows it per-origin.
+        const geo = parseGeolocation();
+        if (geo) {
+          contextOptions.geolocation = geo;
+          contextOptions.permissions = ['geolocation'];
+        }
       }
       let sessionProxy = null;
       if (proxyPool?.canRotateSessions) {
