@@ -36,6 +36,8 @@
   },
   "files": [
     "server.js",
+    "cli.js",
+    "CLI.md",
     "lib/",
     "plugins/",
     "camofox.config.json",
@@ -145,6 +147,7 @@
     "typescript": "^5.7.0"
   },
   "bin": {
-    "camofox-browser": "./bin/camofox-browser.js"
+    "camofox-browser": "./bin/camofox-browser.js",
+    "camofox": "./cli.js"
   }
 }
