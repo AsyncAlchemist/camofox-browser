@@ -557,6 +557,35 @@ function getSpoofOS() {
   return 'windows';
 }
 
+// GeoIP would derive locale/timezone/geolocation/WebRTC-IP from the exit IP, but
+// it sets the camoufox `timezone` config key, which CRASHES the Camoufox 135
+// renderer (every page closes on load). So it's OFF by default here, even with a
+// proxy (upstream auto-enables it with a proxy -- that path crashes on this
+// build). Set CAMOFOX_GEOIP=true to force it on a future build that fixes the
+// crash. For coherent geo without geoip, use CAMOFOX_LOCALE + the TZ env var.
+function getGeoip() {
+  return process.env.CAMOFOX_GEOIP === 'true';
+}
+
+// Explicit locale, e.g. 'es-AR' (Spanish/Argentina). Pins navigator.language /
+// navigator.languages (via locale:all, which camoufox-js omits) and
+// Accept-Language (via the locale param). Pair with the TZ env var for a
+// matching timezone, e.g. TZ=America/Argentina/Buenos_Aires.
+const SPOOF_LOCALE = process.env.CAMOFOX_LOCALE || undefined;
+// camoufox-js sets locale:region/language/script but not locale:all, which is
+// the key Camoufox actually reads for navigator.language. Inject it ourselves.
+const LOCALE_CONFIG = SPOOF_LOCALE ? { 'locale:all': SPOOF_LOCALE } : {};
+
+// Optional GPS coordinates as "lat,lon" (e.g. CAMOFOX_GEOLOCATION="-34.6037,-58.3816"
+// for Buenos Aires) so a site requesting geolocation matches the locale/timezone.
+function parseGeolocation() {
+  const v = process.env.CAMOFOX_GEOLOCATION;
+  if (!v) return null;
+  const [lat, lon] = v.split(',').map((n) => parseFloat(n.trim()));
+  if (Number.isFinite(lat) && Number.isFinite(lon)) return { latitude: lat, longitude: lon };
+  return null;
+}
+
 // Proxy strategy for outbound browsing.
 const proxyPool = createProxyPool(CONFIG.proxy);
 
@@ -970,7 +999,10 @@ async function launchBrowserInstance() {
     try {
       if (os.platform() === 'linux') {
         localVirtualDisplay = pluginCtx.createVirtualDisplay();
-        vdDisplay = localVirtualDisplay.get();
+        // get() is async in camoufox-js >=0.11; await works for both (awaiting a
+        // non-promise returns the value). Without await, DISPLAY becomes
+        // "[object Promise]" and the browser fails with "cannot open display".
+        vdDisplay = await localVirtualDisplay.get();
         log('info', 'xvfb virtual display started', { display: vdDisplay, attempt });
       }
     } catch (err) {
@@ -998,6 +1030,8 @@ async function launchBrowserInstance() {
         headless: useVirtualDisplay ? false : true,
         os: getSpoofOS(),
         humanize: true,
+        locale: SPOOF_LOCALE,
+        config: LOCALE_CONFIG,
         // Leave WebRTC present by default: Camoufox spoofs the WebRTC IP to the
         // proxy/geoip IP (leak-safe) while keeping RTCPeerConnection available.
         // Fully blocking it (CAMOFOX_BLOCK_WEBRTC=true) removes the API, which is
@@ -1005,7 +1039,7 @@ async function launchBrowserInstance() {
         block_webrtc: process.env.CAMOFOX_BLOCK_WEBRTC === 'true',
         enable_cache: true,
         proxy: launchProxy,
-        geoip: !!launchProxy,
+        geoip: getGeoip(),
         virtual_display: vdDisplay,
       });
       options.proxy = normalizePlaywrightProxy(options.proxy);
@@ -1204,12 +1238,14 @@ async function getSession(userId, { trace = false } = {}) {
         viewport: { width: 1280, height: 720 },
         permissions: ['geolocation'],
       };
-      // When geoip is active (proxy configured), camoufox auto-configures
-      // locale/timezone/geolocation from the proxy IP. Without proxy, use defaults.
+      // Playwright context-level locale/timezone OVERRIDE Camoufox's browser-level
+      // config, so set them here from env to stay coherent (e.g. CAMOFOX_LOCALE=es-AR
+      // + TZ=America/Argentina/Buenos_Aires). Defaults preserve prior behavior.
+      // Skipped when a proxy is set (proxy/geoip path manages geo separately).
       if (!CONFIG.proxy.host) {
-        contextOptions.locale = 'en-US';
-        contextOptions.timezoneId = 'America/Los_Angeles';
-        contextOptions.geolocation = { latitude: 37.7749, longitude: -122.4194 };
+        contextOptions.locale = SPOOF_LOCALE || 'en-US';
+        contextOptions.timezoneId = process.env.TZ || 'America/Los_Angeles';
+        contextOptions.geolocation = parseGeolocation() || { latitude: 37.7749, longitude: -122.4194 };
       }
       let sessionProxy = null;
       if (proxyPool?.canRotateSessions) {
