@@ -998,7 +998,11 @@ async function launchBrowserInstance() {
         headless: useVirtualDisplay ? false : true,
         os: getSpoofOS(),
         humanize: true,
-        block_webrtc: true, // prevent WebRTC from leaking the real/local IP behind a proxy
+        // Leave WebRTC present by default: Camoufox spoofs the WebRTC IP to the
+        // proxy/geoip IP (leak-safe) while keeping RTCPeerConnection available.
+        // Fully blocking it (CAMOFOX_BLOCK_WEBRTC=true) removes the API, which is
+        // itself a bot tell since real browsers expose WebRTC.
+        block_webrtc: process.env.CAMOFOX_BLOCK_WEBRTC === 'true',
         enable_cache: true,
         proxy: launchProxy,
         geoip: !!launchProxy,
