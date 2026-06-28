@@ -252,8 +252,15 @@ function dockerContainerRunning() {
 }
 
 function dockerBuild() {
-  console.log('Building camofox image...');
-  execFileSync('docker', ['build', '-t', CONTAINER_NAME, __dirname], { stdio: 'inherit' });
+  // Delegate to the Makefile: it downloads the arch-correct Camoufox binary and
+  // yt-dlp into dist/ (required by the Dockerfile's bind mount) and runs the
+  // docker build with the right build-args. Then tag the arch-specific image as
+  // `camofox` so the run/inspect logic below can find it by a stable name.
+  console.log('Building camofox image via Makefile (downloads Camoufox binary on first run)...');
+  execFileSync('make', ['build'], { cwd: __dirname, stdio: 'inherit' });
+  const id = execFileSync('docker', ['images', '-q', 'camofox-browser'], { encoding: 'utf8' })
+    .split('\n')[0].trim();
+  if (id) execFileSync('docker', ['tag', id, CONTAINER_NAME], { stdio: 'ignore' });
   console.log('Build complete');
 }
 
@@ -297,7 +304,7 @@ async function cmdServe(args) {
 
   // Pass through relevant env vars (auto-generate API key if none set)
   const apiKey = ensureApiKey();
-  const envFlags = [];
+  const envFlags = ['-e', 'NODE_ENV=production'];
   if (ADMIN_KEY) envFlags.push('-e', `CAMOFOX_ADMIN_KEY=${ADMIN_KEY}`);
   envFlags.push('-e', `CAMOFOX_API_KEY=${apiKey}`);
   if (process.env.PROXY_HOST) {
