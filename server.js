@@ -396,6 +396,13 @@ const NATIVE_MEM_RESTART_THRESHOLD_MB = CONFIG.nativeMemRestartThresholdMb;
 let _nativeMemBaseline = null; // RSS - heapUsed at first idle measurement
 const FAILURE_THRESHOLD = 3;
 const MAX_CONSECUTIVE_TIMEOUTS = 3;
+// Rotate the browser fingerprint (fresh canvas seed, etc.) once a long-lived
+// browser exceeds this age, but only while idle so active work isn't disrupted.
+// Each Camoufox launch generates a new fingerprint, so recycling = rotation.
+// Default 30 min; set CAMOFOX_FINGERPRINT_MAX_AGE_MS=0 to disable.
+const FINGERPRINT_MAX_AGE_MS = Number.isFinite(Number(process.env.CAMOFOX_FINGERPRINT_MAX_AGE_MS))
+  ? Number(process.env.CAMOFOX_FINGERPRINT_MAX_AGE_MS)
+  : 30 * 60 * 1000;
 const TAB_LOCK_TIMEOUT_MS = 35000; // Must be > HANDLER_TIMEOUT_MS so active op times out first
 
 
@@ -537,6 +544,17 @@ function getHostOS() {
   if (platform === 'darwin') return 'macos';
   if (platform === 'win32') return 'windows';
   return 'linux';
+}
+
+// OS fingerprint to present to sites. Defaults to 'windows' to blend with the
+// majority of desktop traffic (a Linux fingerprint is a rare ~2-4% minority and
+// a weak signal on its own). Set CAMOFOX_SPOOF_OS to 'macos'/'linux'/'windows'
+// to pin one, or 'host' to match the actual host OS.
+function getSpoofOS() {
+  const v = (process.env.CAMOFOX_SPOOF_OS || 'windows').toLowerCase();
+  if (v === 'host') return getHostOS();
+  if (v === 'windows' || v === 'macos' || v === 'linux') return v;
+  return 'windows';
 }
 
 // Proxy strategy for outbound browsing.
@@ -963,6 +981,7 @@ async function launchBrowserInstance() {
     const useVirtualDisplay = !!vdDisplay;
     log('info', 'launching camoufox', {
       hostOS,
+      spoofOS: getSpoofOS(),
       attempt,
       maxAttempts,
       geoip: !!launchProxy,
@@ -977,8 +996,9 @@ async function launchBrowserInstance() {
       const options = await launchOptions({
         executable_path: externalCamoufox?.executablePath,
         headless: useVirtualDisplay ? false : true,
-        os: hostOS,
+        os: getSpoofOS(),
         humanize: true,
+        block_webrtc: true, // prevent WebRTC from leaking the real/local IP behind a proxy
         enable_cache: true,
         proxy: launchProxy,
         geoip: !!launchProxy,
@@ -5098,6 +5118,23 @@ setInterval(() => {
 // while Node reports zero sessions/tabs.
 setInterval(() => {
   if (sessions.size > 0 || !browser) return;
+
+  // Fingerprint rotation: recycle a long-lived browser while idle so the next
+  // launch generates a fresh Camoufox fingerprint (new canvas seed, etc.),
+  // preventing one identical fingerprint from persisting across many sessions.
+  if (FINGERPRINT_MAX_AGE_MS > 0 && _lastBrowserRestartAt &&
+      (Date.now() - _lastBrowserRestartAt) >= FINGERPRINT_MAX_AGE_MS) {
+    log('info', 'rotating browser fingerprint (max age reached while idle)', {
+      ageMs: Date.now() - _lastBrowserRestartAt,
+      maxAgeMs: FINGERPRINT_MAX_AGE_MS,
+    });
+    browserRestartsTotal.labels('fingerprint_rotation').inc();
+    closeBrowserFully('fingerprint_rotation').catch((err) => {
+      log('error', 'fingerprint rotation browser close failed', { error: err.message });
+    });
+    return;
+  }
+
   const mem = process.memoryUsage();
   const nativeMemMb = Math.round((mem.rss - mem.heapUsed) / 1048576);
   const browserRssMb = browserProcessTreeRssMb(_browserPid());
