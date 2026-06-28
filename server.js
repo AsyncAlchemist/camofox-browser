@@ -31,6 +31,7 @@ import {
   startMemoryReporter, stopMemoryReporter,
 } from './lib/metrics.js';
 import { actionFromReq, classifyError } from './lib/request-utils.js';
+import { solveCloudflare } from './lib/cloudflare.js';
 import { cleanupOrphanedTempFiles, cleanupStaleFirefoxProfiles } from './lib/tmp-cleanup.js';
 import { coalesceInflight } from './lib/inflight.js';
 import { createReporter, createTabHealthTracker, collectResourceSnapshot, classifyProxyError, browserProcessTreeRssMb } from './lib/reporter.js';
@@ -4478,6 +4479,41 @@ app.post('/tabs/:tabId/evaluate', authMiddleware(), express.json({ limit: '1mb' 
   } catch (err) {
     failuresTotal.labels(classifyError(err), 'evaluate').inc();
     log('error', 'evaluate failed', { reqId: req.reqId, error: err.message });
+    res.status(500).json({ error: safeError(err) });
+  }
+});
+
+// Attempt to solve a Cloudflare challenge (Turnstile / interstitial) by clicking
+// the verification checkbox. Works when the challenge is passable by interaction;
+// it cannot rescue a fingerprint Cloudflare has already hard-rejected.
+app.post('/tabs/:tabId/solve-cloudflare', authMiddleware(), express.json({ limit: '256kb' }), async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId || req.body?.tabId);
+
+    session.lastAccess = Date.now();
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+
+    // Bounded to fit the handler/lock budget (~30s). Body can override.
+    const opts = {
+      type: req.body.type || 'auto',
+      expectedSelector: req.body.expectedSelector || null,
+      waitCheckboxAttempts: req.body.waitCheckboxAttempts ?? 6,
+      waitCheckboxDelayMs: req.body.waitCheckboxDelayMs ?? 2000,
+      solveClickDelayMs: req.body.solveClickDelayMs ?? 6000,
+    };
+    const result = await withUserLimit(userId, () =>
+      withTabLock(req.params.tabId, () => solveCloudflare(tabState.page, opts), 45000));
+    log('info', 'solve-cloudflare', { reqId: req.reqId, tabId: req.params.tabId, userId, ...result });
+    res.json({ ok: true, ...result, url: tabState.page.url() });
+  } catch (err) {
+    failuresTotal.labels(classifyError(err), 'solve_cloudflare').inc();
+    log('error', 'solve-cloudflare failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
   }
 });

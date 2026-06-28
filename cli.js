@@ -33,7 +33,7 @@ function ensureApiKey() {
 const TAB_COMMANDS = new Set([
   'snapshot', 'screenshot', 'goto', 'click', 'type', 'press', 'scroll',
   'back', 'forward', 'refresh', 'wait', 'links', 'images', 'downloads',
-  'eval', 'close', 'stats',
+  'eval', 'solve', 'close', 'stats',
 ]);
 
 // ── HTTP helper ──────────────────────────────────────────────────────────────
@@ -457,6 +457,17 @@ async function cmdEval(tabId, args) {
   else if (result !== undefined) console.log(JSON.stringify(result, null, 2));
 }
 
+async function cmdSolve(tabId, args) {
+  const expectedSelector = args[0]; // optional CSS selector to confirm real content
+  const body = { userId: USER };
+  if (expectedSelector) body.expectedSelector = expectedSelector;
+  const data = await api('POST', `/tabs/${tabId}/solve-cloudflare`, body);
+  if (!data.detected) { console.log('No Cloudflare challenge detected'); return; }
+  console.log(`${data.type} challenge: ${data.solved ? 'SOLVED' : 'NOT solved'}${data.reason ? ' (' + data.reason + ')' : ''}`);
+  if (data.url) console.log(data.url);
+  if (!data.solved) process.exitCode = 2;
+}
+
 async function cmdClose(tabId) {
   await api('DELETE', `/tabs/${tabId}`, { userId: USER });
   console.log('Tab closed');
@@ -488,6 +499,7 @@ Commands:
   press          Press a key
   scroll         Scroll the page
   eval           Execute JavaScript
+  solve          Solve a Cloudflare challenge (click)
   close          Close a tab
 
   Run "camofox help <command>" for details.
@@ -667,6 +679,21 @@ Examples:
   camofox eval 0 document.title
   camofox eval 0 "document.querySelectorAll('a').length"`,
 
+  solve: `Usage: camofox solve <tab> [expected-css-selector]
+
+Attempt to solve a Cloudflare challenge (Turnstile or interstitial) on the tab
+by clicking the verification checkbox. Auto-detects the challenge type.
+
+Optionally pass a CSS selector that should appear once the real page loads, to
+confirm success. Exit code is non-zero if the challenge was not solved.
+
+Works when the challenge is passable by interaction; it cannot get past a
+fingerprint Cloudflare has already hard-rejected (use cookie import for those).
+
+Examples:
+  camofox solve 0
+  camofox solve 0 "#main-content"`,
+
   close: `Usage: camofox close <tab>
 
 Close a tab.`,
@@ -752,6 +779,7 @@ async function main() {
       case 'images': return cmdImages(tabId);
       case 'downloads': return cmdDownloads(tabId, rest);
       case 'eval': return cmdEval(tabId, rest);
+      case 'solve': return cmdSolve(tabId, rest);
       case 'close': return cmdClose(tabId);
       case 'stats': return cmdStats(tabId);
     }
