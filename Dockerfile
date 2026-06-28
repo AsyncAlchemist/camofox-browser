@@ -57,9 +57,9 @@ RUN --mount=type=bind,source=dist,target=/dist \
 
 WORKDIR /app
 
-COPY package.json ./
+COPY package.json package-lock.json ./
 COPY scripts/ ./scripts/
-RUN npm install --production
+RUN npm ci --omit=dev
 
 COPY server.js ./
 COPY camofox.config.json ./

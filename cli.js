@@ -39,7 +39,13 @@ const TAB_COMMANDS = new Set([
 // ── HTTP helper ──────────────────────────────────────────────────────────────
 
 async function api(method, path, body, extraHeaders) {
-  const opts = { method, headers: { ...extraHeaders } };
+  // Attach the API key on every request. Read endpoints ignore it; auth-gated
+  // endpoints (evaluate, cookies, traces, ...) require it when CAMOFOX_API_KEY
+  // is set on the server. extraHeaders can still override.
+  const defaultHeaders = {};
+  const apiKey = readApiKey();
+  if (apiKey) defaultHeaders['Authorization'] = `Bearer ${apiKey}`;
+  const opts = { method, headers: { ...defaultHeaders, ...extraHeaders } };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
@@ -225,11 +231,7 @@ async function cmdCookies(args) {
   const cookies = parseCurlCookies(curlText);
   if (!cookies.length) throw new Error('No cookies found in curl command');
 
-  const headers = {};
-  const apiKey = readApiKey();
-  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-
-  const data = await api('POST', `/sessions/${encodeURIComponent(USER)}/cookies`, { cookies }, headers);
+  const data = await api('POST', `/sessions/${encodeURIComponent(USER)}/cookies`, { cookies });
   console.log(`${data.count} cookies imported for ${USER}`);
 }
 
