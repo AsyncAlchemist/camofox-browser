@@ -21,6 +21,9 @@ All config is via environment variables:
 | `CAMOFOX_USER` | User ID for session isolation | `cli` |
 | `CAMOFOX_SESSION` | Session key for tab grouping | `default` |
 | `CAMOFOX_ADMIN_KEY` | Admin key (required for `stop`) | - |
+| `CAMOFOX_MARKDOWN_URL` | Cloudflare Browser Rendering Markdown endpoint; falls back to `~/.camofox/markdown-url` | - |
+| `CAMOFOX_MARKDOWN_TOKEN` | Optional bearer token for Markdown endpoint; falls back to `~/.camofox/markdown-token` | - |
+| `CAMOFOX_MARKDOWN_TIMEOUT_MS` | Markdown endpoint timeout | `45000` |
 
 ## Server
 
@@ -77,6 +80,17 @@ camofox stop                    # shut it down (needs CAMOFOX_ADMIN_KEY)
 camofox transcript https://www.youtube.com/watch?v=dQw4w9WgXcQ
 # → [00:18] ♪ We're no strangers to love ♪ ...
 ```
+
+### Markdown capture
+
+```bash
+export CAMOFOX_MARKDOWN_URL=https://your-worker.example.workers.dev/markdown
+camofox markdown https://example.com > page.md
+```
+
+Captures a rendered URL as Markdown through a configured Cloudflare Browser Rendering Worker endpoint. On success, stdout is the Markdown content. On failure, diagnostics go to stderr and the command exits non-zero.
+
+If `CAMOFOX_MARKDOWN_URL` / `CAMOFOX_MARKDOWN_TOKEN` are unset, the CLI reads `~/.camofox/markdown-url` and `~/.camofox/markdown-token`.
 
 ### Close session
 

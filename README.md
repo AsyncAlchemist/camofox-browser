@@ -565,6 +565,19 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 | `POST` | `/tabs/:id/forward` | Go forward |
 | `POST` | `/tabs/:id/refresh` | Refresh page |
 
+## Markdown capture
+
+The CLI can use an external Cloudflare Browser Rendering Worker to capture a rendered URL as Markdown:
+
+```bash
+export CAMOFOX_MARKDOWN_URL=https://your-worker.example.workers.dev/markdown
+camofox markdown https://example.com > page.md
+```
+
+On success, stdout is only the Markdown content. On failure, the command writes the error to stderr and exits non-zero. A deployable Worker implementation lives in [`workers/markdown-capture`](workers/markdown-capture).
+
+If `CAMOFOX_MARKDOWN_URL` / `CAMOFOX_MARKDOWN_TOKEN` are unset, the CLI reads `~/.camofox/markdown-url` and `~/.camofox/markdown-token`.
+
 ### YouTube Transcript
 
 | Method | Endpoint | Description |
@@ -638,6 +651,9 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `PROXY_COUNTRY` | Target country for proxy geo-targeting | - |
 | `PROXY_STATE` | Target state/region for proxy geo-targeting | - |
 | `TAB_INACTIVITY_MS` | Close tabs idle longer than this | `300000` (5min) |
+| `CAMOFOX_MARKDOWN_URL` | Cloudflare Browser Rendering Markdown endpoint used by `camofox markdown`; falls back to `~/.camofox/markdown-url` | - |
+| `CAMOFOX_MARKDOWN_TOKEN` | Optional bearer token sent to the Markdown endpoint; falls back to `~/.camofox/markdown-token` | - |
+| `CAMOFOX_MARKDOWN_TIMEOUT_MS` | Timeout for `camofox markdown` endpoint calls | `45000` |
 | `CAMOFOX_CRASH_REPORT_ENABLED` | Enable anonymized crash/hang telemetry (`false` to disable) | `true` |
 | `CAMOFOX_CRASH_REPORT_URL` | Telemetry endpoint ([self-hosted endpoint](#self-hosted-telemetry-endpoint)) | `https://camofox-telemetry.askjo.workers.dev/report` |
 | `CAMOFOX_CRASH_REPORT_REPO` | GitHub repo for telemetry issues | `jo-inc/camofox-browser` |

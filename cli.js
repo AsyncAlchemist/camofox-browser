@@ -12,9 +12,19 @@ const BASE = process.env.CAMOFOX_URL || 'http://127.0.0.1:9377';
 const USER = process.env.CAMOFOX_USER || 'cli';
 const SESSION = process.env.CAMOFOX_SESSION || 'default';
 const ADMIN_KEY = process.env.CAMOFOX_ADMIN_KEY || '';
+const MARKDOWN_TIMEOUT_MS = parseInt(process.env.CAMOFOX_MARKDOWN_TIMEOUT_MS || '45000', 10);
 const CONTAINER_NAME = 'camofox';
 const CONTAINER_PORT = parseInt(new URL(BASE).port || '9377', 10);
 const KEY_FILE = join(homedir(), '.camofox', 'api-key');
+const MARKDOWN_URL_FILE = join(homedir(), '.camofox', 'markdown-url');
+const MARKDOWN_TOKEN_FILE = join(homedir(), '.camofox', 'markdown-token');
+
+function readConfigFile(path) {
+  try { return readFileSync(path, 'utf8').trim(); } catch { return ''; }
+}
+
+const MARKDOWN_URL = process.env.CAMOFOX_MARKDOWN_URL || readConfigFile(MARKDOWN_URL_FILE);
+const MARKDOWN_TOKEN = process.env.CAMOFOX_MARKDOWN_TOKEN || readConfigFile(MARKDOWN_TOKEN_FILE);
 
 function readApiKey() {
   if (process.env.CAMOFOX_API_KEY) return process.env.CAMOFOX_API_KEY;
@@ -151,6 +161,83 @@ async function cmdTranscript(args) {
   const data = await api('POST', '/youtube/transcript', { url });
   process.stdout.write(data.transcript || '');
   if (data.transcript && !data.transcript.endsWith('\n')) process.stdout.write('\n');
+}
+
+function validateHttpUrl(input) {
+  let parsed;
+  try {
+    parsed = new URL(input);
+  } catch {
+    throw new Error('URL must be a valid http(s) URL');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('URL must use http or https');
+  }
+  return parsed.toString();
+}
+
+async function markdownError(res, bodyText) {
+  const prefix = `markdown fetch failed (${res.status})`;
+  if (!bodyText) return prefix;
+  try {
+    const data = JSON.parse(bodyText);
+    const msg = data.error || data.message || data.errors;
+    if (msg) return `${prefix}: ${typeof msg === 'string' ? msg : JSON.stringify(msg)}`;
+  } catch {
+    // fall through to plain text
+  }
+  return `${prefix}: ${bodyText.slice(0, 500)}`;
+}
+
+async function cmdMarkdown(args) {
+  const urlArg = args[0];
+  if (!urlArg) throw new Error('Usage: camofox markdown <url>');
+  if (!MARKDOWN_URL) {
+    throw new Error('CAMOFOX_MARKDOWN_URL is required. Point it at a Cloudflare Browser Rendering /markdown Worker endpoint.');
+  }
+
+  const url = validateHttpUrl(urlArg);
+  const controller = new AbortController();
+  const timeoutMs = Number.isFinite(MARKDOWN_TIMEOUT_MS) && MARKDOWN_TIMEOUT_MS > 0 ? MARKDOWN_TIMEOUT_MS : 45000;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'text/markdown, application/json;q=0.9, text/plain;q=0.8',
+    };
+    if (MARKDOWN_TOKEN) headers.Authorization = `Bearer ${MARKDOWN_TOKEN}`;
+
+    const res = await fetch(MARKDOWN_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ url }),
+      signal: controller.signal,
+    });
+    const contentType = res.headers.get('content-type') || '';
+    const bodyText = await res.text();
+    if (!res.ok) throw new Error(await markdownError(res, bodyText));
+
+    let markdown = bodyText;
+    if (contentType.includes('application/json')) {
+      const data = JSON.parse(bodyText);
+      if (data.ok === false || data.success === false) {
+        throw new Error(data.error || data.message || 'markdown fetch failed');
+      }
+      markdown = data.markdown ?? data.result ?? data.content;
+      if (typeof markdown !== 'string') {
+        throw new Error('markdown endpoint returned JSON without markdown/result/content string');
+      }
+    }
+    if (!markdown.trim()) throw new Error('markdown endpoint returned empty content');
+    process.stdout.write(markdown);
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error(`markdown fetch timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function cmdStart() {
@@ -490,6 +577,7 @@ Commands:
   health         Server health check
   close-session  Close all tabs for current user
   cookies        Import cookies from a "Copy as cURL" command
+  markdown       Capture a URL as Markdown via Cloudflare Browser Rendering
 
   snapshot       Page accessibility tree
   screenshot     Save screenshot
@@ -508,7 +596,24 @@ Environment:
   CAMOFOX_URL       Server URL (default: http://127.0.0.1:9377)
   CAMOFOX_USER      User ID (default: cli)
   CAMOFOX_SESSION   Session key (default: default)
-  CAMOFOX_ADMIN_KEY Admin key (required for stop)`,
+  CAMOFOX_ADMIN_KEY Admin key (required for stop)
+  CAMOFOX_MARKDOWN_URL   Markdown Worker endpoint (or ~/.camofox/markdown-url)
+  CAMOFOX_MARKDOWN_TOKEN Markdown Worker bearer token (or ~/.camofox/markdown-token)`,
+  markdown: `Usage: camofox markdown <url>
+
+Capture a rendered URL as Markdown through a configured Cloudflare Browser
+Rendering Worker endpoint. Prints Markdown to stdout exactly as returned.
+Errors are written to stderr and exit non-zero.
+
+Environment:
+  CAMOFOX_MARKDOWN_URL         Full Worker endpoint URL, e.g. https://.../markdown
+                                Falls back to ~/.camofox/markdown-url
+  CAMOFOX_MARKDOWN_TOKEN       Optional bearer token for the Worker
+                                Falls back to ~/.camofox/markdown-token
+  CAMOFOX_MARKDOWN_TIMEOUT_MS  Request timeout in ms (default: 45000)
+
+Example:
+  camofox markdown https://example.com > page.md`,
 
   serve: `Usage: camofox serve [subcommand]
 
@@ -753,6 +858,7 @@ async function main() {
     case 'close-session': return cmdCloseSession();
     case 'cookies': return cmdCookies(args.slice(1));
     case 'transcript': return cmdTranscript(args.slice(1));
+    case 'markdown': return cmdMarkdown(args.slice(1));
     case 'start': return cmdStart();
     case 'stop': return cmdStop();
     case 'serve': return cmdServe(args.slice(1));

@@ -1,0 +1,12 @@
+name = "camofox-markdown-capture"
+main = "index.ts"
+compatibility_date = "2026-04-17"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = false
+
+[browser]
+binding = "BROWSER"
+
+[observability]
+enabled = true

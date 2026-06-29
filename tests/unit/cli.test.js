@@ -8,6 +8,9 @@
 import { execFile } from 'child_process';
 import { createServer } from 'http';
 import { promisify } from 'util';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 const execFileAsync = promisify(execFile);
 const CLI = new URL('../../cli.js', import.meta.url).pathname;
@@ -80,9 +83,13 @@ function defaultHandlers() {
 
 describe('CLI', () => {
   let srv;
+  const tempHomes = [];
 
   afterEach(() => {
     if (srv?.server) srv.server.close();
+    for (const home of tempHomes.splice(0)) {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   describe('help', () => {
@@ -177,6 +184,74 @@ describe('CLI', () => {
       const r = await runWithEnv(srv.url, { CAMOFOX_ADMIN_KEY: 'secret123' }, 'stop');
       expect(r.stdout).toContain('Browser stopped');
       expect(capturedHeaders['x-admin-key']).toBe('secret123');
+    });
+
+    test('markdown posts URL and writes markdown to stdout', async () => {
+      let capturedHeaders;
+      let capturedBody;
+      const server = createServer((req, res) => {
+        if (req.method === 'POST' && req.url === '/markdown') {
+          capturedHeaders = req.headers;
+          let body = '';
+          req.on('data', c => body += c);
+          req.on('end', () => {
+            capturedBody = JSON.parse(body);
+            res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+            res.end('# Captured\n\nHello');
+          });
+          return;
+        }
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+      });
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      const port = server.address().port;
+      srv = { server, port, url: `http://127.0.0.1:${port}` };
+
+      const r = await runWithEnv(srv.url, {
+        CAMOFOX_MARKDOWN_URL: `${srv.url}/markdown`,
+        CAMOFOX_MARKDOWN_TOKEN: 'tok',
+      }, 'markdown', 'https://example.com/path');
+
+      expect(r.code).toBe(0);
+      expect(r.stdout).toBe('# Captured\n\nHello');
+      expect(r.stderr).toBe('');
+      expect(capturedHeaders.authorization).toBe('Bearer tok');
+      expect(capturedBody).toEqual({ url: 'https://example.com/path' });
+    });
+
+    test('markdown endpoint errors go to stderr and exit non-zero', async () => {
+      const server = createServer((req, res) => {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'blocked by bot challenge' }));
+      });
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      const port = server.address().port;
+      srv = { server, port, url: `http://127.0.0.1:${port}` };
+
+      const r = await runWithEnv(srv.url, {
+        CAMOFOX_MARKDOWN_URL: `${srv.url}/markdown`,
+      }, 'markdown', 'https://example.com/');
+
+      expect(r.code).not.toBe(0);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toContain('blocked by bot challenge');
+    });
+
+    test('markdown requires endpoint configuration', async () => {
+      srv = await startServer(defaultHandlers());
+      const home = mkdtempSync(join(tmpdir(), 'camofox-cli-home-'));
+      tempHomes.push(home);
+
+      const r = await runWithEnv(srv.url, {
+        HOME: home,
+        CAMOFOX_MARKDOWN_URL: '',
+        CAMOFOX_MARKDOWN_TOKEN: '',
+      }, 'markdown', 'https://example.com/');
+
+      expect(r.code).not.toBe(0);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toContain('CAMOFOX_MARKDOWN_URL is required');
     });
   });
 

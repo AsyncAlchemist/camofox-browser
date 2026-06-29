@@ -1,0 +1,4 @@
+interface:
+  display_name: "Camofox Browser"
+  short_description: "Browse and interact through Camofox"
+  default_prompt: "Use $camofox-browser to browse a webpage, interact with it, or extract rendered content."
