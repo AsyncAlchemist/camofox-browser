@@ -22,7 +22,7 @@ All config is via environment variables:
 | `CAMOFOX_SESSION` | Session key for tab grouping | `default` |
 | `CAMOFOX_ADMIN_KEY` | Admin key (required for `stop`) | - |
 | `CAMOFOX_MARKDOWN_URL` | Cloudflare Browser Rendering Markdown endpoint; falls back to `~/.camofox/markdown-url` | - |
-| `CAMOFOX_MARKDOWN_TOKEN` | Optional bearer token for Markdown endpoint; falls back to `~/.camofox/markdown-token` | - |
+| `CAMOFOX_MARKDOWN_TOKEN` | Bearer token for the Markdown endpoint (the Worker requires it); falls back to `~/.camofox/markdown-token` | - |
 | `CAMOFOX_MARKDOWN_TIMEOUT_MS` | Markdown endpoint timeout | `45000` |
 | `BYTEFUL_API_PUBLIC_KEY` | byteful API public key (for `proxy list`); falls back to `~/.camofox/byteful.env` or `byteful-sdk/.env` | - |
 | `BYTEFUL_API_PRIVATE_KEY` | byteful API private key (for `proxy list`) | - |

@@ -680,7 +680,7 @@ Reddit macros return JSON directly (no HTML parsing needed):
 | `PROXY_STATE` | Target state/region for proxy geo-targeting | - |
 | `TAB_INACTIVITY_MS` | Close tabs idle longer than this | `300000` (5min) |
 | `CAMOFOX_MARKDOWN_URL` | Cloudflare Browser Rendering Markdown endpoint used by `camofox markdown`; falls back to `~/.camofox/markdown-url` | - |
-| `CAMOFOX_MARKDOWN_TOKEN` | Optional bearer token sent to the Markdown endpoint; falls back to `~/.camofox/markdown-token` | - |
+| `CAMOFOX_MARKDOWN_TOKEN` | Bearer token sent to the Markdown endpoint (the Worker requires it); falls back to `~/.camofox/markdown-token` | - |
 | `CAMOFOX_MARKDOWN_TIMEOUT_MS` | Timeout for `camofox markdown` endpoint calls | `45000` |
 | `CAMOFOX_CRASH_REPORT_ENABLED` | Enable anonymized crash/hang telemetry (`false` to disable) | `true` |
 | `CAMOFOX_CRASH_REPORT_URL` | Telemetry endpoint ([self-hosted endpoint](#self-hosted-telemetry-endpoint)) | `https://camofox-telemetry.askjo.workers.dev/report` |

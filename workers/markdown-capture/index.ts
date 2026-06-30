@@ -5,11 +5,14 @@
  *   POST /markdown  { "url": "https://example.com" } -> text/markdown
  *   GET  /health    -> { ok: true }
  *
- * Optional secret:
+ * Required secret:
  *   MARKDOWN_CAPTURE_TOKEN
  *
- * When MARKDOWN_CAPTURE_TOKEN is set, callers must send:
- *   Authorization: Bearer <token>
+ * /markdown requires Authorization: Bearer <token>. If the secret is not
+ * configured the endpoint refuses all capture requests (503) — an
+ * unauthenticated deployment would be an open markdown/SSRF proxy. Set it with:
+ *   npx wrangler secret put MARKDOWN_CAPTURE_TOKEN
+ * (/health stays open for uptime checks.)
  */
 
 interface BrowserRendering extends Fetcher {
@@ -188,7 +191,13 @@ export default {
     if (req.method !== "POST") {
       return json({ ok: false, error: "method not allowed" }, 405);
     }
-    if (env.MARKDOWN_CAPTURE_TOKEN && bearerToken(req) !== env.MARKDOWN_CAPTURE_TOKEN) {
+    // Auth is mandatory: an unauthenticated deployment is an open
+    // markdown/SSRF proxy, so refuse to serve capture requests unless the
+    // token is configured. (/health stays open for uptime checks.)
+    if (!env.MARKDOWN_CAPTURE_TOKEN) {
+      return json({ ok: false, error: "server misconfigured: MARKDOWN_CAPTURE_TOKEN is not set" }, 503);
+    }
+    if (bearerToken(req) !== env.MARKDOWN_CAPTURE_TOKEN) {
       return json({ ok: false, error: "unauthorized" }, 401);
     }
 
