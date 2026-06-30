@@ -5,7 +5,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { randomBytes as cryptoRandomBytes } from 'crypto';
-import { homedir } from 'os';
+import { homedir, userInfo } from 'os';
 import {
   parseProxyLine,
   readStoredProxy,
@@ -22,8 +22,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // in keys that aren't already set. Runs before the env-derived constants below.
 loadEnvFile(join(__dirname, '.env'));
 
+// Default the camofox userId to the OS user. userInfo() reads the system passwd
+// by effective UID, so it works even in a clean environment (cron, systemd) where
+// no profile is sourced and $USER is unset — keeping each OS user's tabs/cookies
+// isolated everywhere, not just in login shells. Falls back to env then 'cli'.
+function resolveDefaultUser() {
+  try {
+    const name = userInfo().username;
+    if (name) return name;
+  } catch { /* no passwd entry (e.g. arbitrary-UID container) */ }
+  return process.env.USER || process.env.LOGNAME || 'cli';
+}
+
 const BASE = process.env.CAMOFOX_URL || 'http://127.0.0.1:9377';
-const USER = process.env.CAMOFOX_USER || 'cli';
+const USER = process.env.CAMOFOX_USER || resolveDefaultUser();
 const SESSION = process.env.CAMOFOX_SESSION || 'default';
 const ADMIN_KEY = process.env.CAMOFOX_ADMIN_KEY || '';
 const MARKDOWN_TIMEOUT_MS = parseInt(process.env.CAMOFOX_MARKDOWN_TIMEOUT_MS || '45000', 10);

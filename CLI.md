@@ -20,7 +20,7 @@ sourcing — real environment variables still take precedence over `.env`.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CAMOFOX_URL` | Server base URL | `http://127.0.0.1:9377` |
-| `CAMOFOX_USER` | User ID for session isolation | `cli` |
+| `CAMOFOX_USER` | User ID for session isolation | OS username (e.g. `selden`); `cli` if undeterminable |
 | `CAMOFOX_SESSION` | Session key for tab grouping | `default` |
 | `CAMOFOX_ADMIN_KEY` | Admin key (required for `stop`) | - |
 | `CAMOFOX_MARKDOWN_URL` | Cloudflare Browser Rendering Markdown endpoint; falls back to `~/.camofox/markdown-url` | - |
