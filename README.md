@@ -622,7 +622,8 @@ Reddit macros return JSON directly (no HTML parsing needed):
 |----------|-------------|---------|
 | `CAMOFOX_PORT` | Server port | `9377` |
 | `PORT` | Server port (fallback, for platforms like Fly.io, Railway) | `9377` |
-| `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset) | - |
+| `CAMOFOX_HOST` | Bind address. Set to `127.0.0.1` (or `::1` / `localhost`) for a **loopback-exclusive** server: the OS guarantees every caller is on this machine, so auth is bypassed entirely (no API key needed for `eval`, cookie import, traces, etc.). Any other value (`0.0.0.0`, `::`, a LAN/public IP) is reachable off-box, so auth is required for everybody. | `0.0.0.0` |
+| `CAMOFOX_API_KEY` | Enable cookie import endpoint (disabled if unset). Not required when bound loopback-exclusively (see `CAMOFOX_HOST`). | - |
 | `CAMOFOX_ADMIN_KEY` | Required for `POST /stop` | - |
 | `CAMOFOX_ACCESS_KEY` | If set, all routes (except `/health`, cookie import, and `/stop`) require `Authorization: Bearer <key>`. Lets you safely expose the server beyond loopback. | - |
 | `CAMOUFOX_EXECUTABLE` | External Camoufox executable to use instead of downloading/launching the bundled cache. Must point to a Camoufox bundle with sibling resources. | - |

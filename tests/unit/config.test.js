@@ -71,4 +71,36 @@ describe('loadConfig', () => {
       VNC_BIND: '0.0.0.0',
     });
   });
+
+  describe('host binding / trustLocal', () => {
+    test('defaults to 0.0.0.0 and does NOT bypass auth', () => {
+      delete process.env.CAMOFOX_HOST;
+      delete process.env.HOST;
+      const config = loadConfig();
+      expect(config.host).toBe('0.0.0.0');
+      expect(config.trustLocal).toBe(false);
+    });
+
+    test('bypasses auth only for loopback-exclusive bindings', () => {
+      for (const h of ['127.0.0.1', '127.1.2.3', '::1', 'localhost', 'LocalHost', '[::1]']) {
+        process.env.CAMOFOX_HOST = h;
+        expect(loadConfig().trustLocal).toBe(true);
+      }
+    });
+
+    test('requires auth for all-interface and external bindings', () => {
+      for (const h of ['0.0.0.0', '::', '192.168.1.50', '10.0.0.1', '0.0.0.0:9377']) {
+        process.env.CAMOFOX_HOST = h;
+        expect(loadConfig().trustLocal).toBe(false);
+      }
+    });
+
+    test('CAMOFOX_HOST takes precedence over HOST', () => {
+      process.env.HOST = '0.0.0.0';
+      process.env.CAMOFOX_HOST = '127.0.0.1';
+      const config = loadConfig();
+      expect(config.host).toBe('127.0.0.1');
+      expect(config.trustLocal).toBe(true);
+    });
+  });
 });

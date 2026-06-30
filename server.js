@@ -6150,6 +6150,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // Fly's auto_stop_machines=false + min_machines_running=2 handles scaling.
 
 const PORT = CONFIG.port;
+const HOST = CONFIG.host;
 pluginEvents.emit('server:starting', { port: PORT });
 
 // Load plugins before starting the server
@@ -6186,15 +6187,20 @@ mountDocs(app);
 // --- Sentry Express error handler (after all routes, before app.listen) ---
 setupSentryErrorHandler(app);
 
-const server = app.listen(PORT, async () => {
+const server = app.listen(PORT, HOST, async () => {
   startMemoryReporter();
   refreshActiveTabsGauge();
   refreshTabLockQueueDepth();
-  pluginEvents.emit('server:started', { port: PORT, pid: process.pid, plugins: loadedPlugins });
+  pluginEvents.emit('server:started', { port: PORT, host: HOST, pid: process.pid, plugins: loadedPlugins });
   if (FLY_MACHINE_ID) {
-    log('info', 'server started (fly)', { port: PORT, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
+    log('info', 'server started (fly)', { port: PORT, host: HOST, pid: process.pid, machineId: FLY_MACHINE_ID, nodeVersion: process.version });
   } else {
-    log('info', 'server started', { port: PORT, pid: process.pid, nodeVersion: process.version });
+    log('info', 'server started', { port: PORT, host: HOST, pid: process.pid, nodeVersion: process.version });
+  }
+  if (CONFIG.trustLocal) {
+    log('info', 'auth bypassed: server bound exclusively to loopback — all local callers trusted', { host: HOST });
+  } else {
+    log('info', 'auth enforced: server bound to a non-loopback address', { host: HOST });
   }
   const tmpCleanup = cleanupOrphanedTempFiles({ tmpDir: os.tmpdir() });
   if (tmpCleanup.removed > 0) {

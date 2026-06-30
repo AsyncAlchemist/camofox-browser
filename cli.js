@@ -23,12 +23,47 @@ function readConfigFile(path) {
   try { return readFileSync(path, 'utf8').trim(); } catch { return ''; }
 }
 
+// Markdown config: env > host config file > running container env (sandbox fallback).
+// The container fallback is resolved lazily (see readContainerEnv) so it only runs
+// when the first two sources came up empty.
 const MARKDOWN_URL = process.env.CAMOFOX_MARKDOWN_URL || readConfigFile(MARKDOWN_URL_FILE);
 const MARKDOWN_TOKEN = process.env.CAMOFOX_MARKDOWN_TOKEN || readConfigFile(MARKDOWN_TOKEN_FILE);
+function resolveMarkdownUrl() { return MARKDOWN_URL || readContainerEnv('CAMOFOX_MARKDOWN_URL'); }
+function resolveMarkdownToken() { return MARKDOWN_TOKEN || readContainerEnv('CAMOFOX_MARKDOWN_TOKEN'); }
 
+// Recover a config value straight from the running container's env. Used when the
+// host config files can't be read — e.g. an agent sandbox that blocks ~/.camofox
+// but still allows `docker` (the same access `camofox serve` needs). Keeps the CLI
+// transparent: any agent on this machine can run `camofox eval/cookies/markdown/...`
+// without manually wiring up keys. Reads all env once and caches it.
+let _containerEnvCache;
+function readContainerEnv(name) {
+  if (_containerEnvCache === undefined) {
+    try {
+      const out = execFileSync(
+        'docker',
+        ['inspect', '--format', '{{range .Config.Env}}{{println .}}{{end}}', CONTAINER_NAME],
+        { stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 },
+      ).toString();
+      _containerEnvCache = {};
+      for (const line of out.split('\n')) {
+        const eq = line.indexOf('=');
+        if (eq > 0) _containerEnvCache[line.slice(0, eq)] = line.slice(eq + 1);
+      }
+    } catch { _containerEnvCache = {}; }
+  }
+  return (_containerEnvCache[name] || '').trim();
+}
+
+let _apiKeyCache;
 function readApiKey() {
-  if (process.env.CAMOFOX_API_KEY) return process.env.CAMOFOX_API_KEY;
-  try { return readFileSync(KEY_FILE, 'utf8').trim(); } catch { return ''; }
+  if (_apiKeyCache !== undefined) return _apiKeyCache;
+  if (process.env.CAMOFOX_API_KEY) return (_apiKeyCache = process.env.CAMOFOX_API_KEY);
+  try {
+    const fromFile = readFileSync(KEY_FILE, 'utf8').trim();
+    if (fromFile) return (_apiKeyCache = fromFile);
+  } catch { /* file missing or unreadable (e.g. sandbox) — try the container */ }
+  return (_apiKeyCache = readContainerEnv('CAMOFOX_API_KEY'));
 }
 
 function ensureApiKey() {
@@ -68,7 +103,19 @@ async function api(method, path, body, extraHeaders) {
     return { _binary: buf, _contentType: contentType };
   }
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    if (res.status === 403 && !apiKey) {
+      throw new Error(
+        `${data.error || 'Forbidden'} — this endpoint requires the API key, but none was found. ` +
+        `The CLI reads it from $CAMOFOX_API_KEY or ~/.camofox/api-key; inside a restricted sandbox that ` +
+        `file is often unreadable, so the CLI silently sends no key and the server returns 403. ` +
+        `Fixes: (a) run the server bound to loopback (CAMOFOX_HOST=127.0.0.1) — auth is then bypassed for all ` +
+        `local callers; (b) add ~/.camofox to the sandbox filesystem allowRead; or (c) pass CAMOFOX_API_KEY in the env. ` +
+        `(Read-only verbs like snapshot/links/goto need no key and work regardless.)`
+      );
+    }
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
   return data;
 }
 
@@ -192,9 +239,15 @@ async function markdownError(res, bodyText) {
 async function cmdMarkdown(args) {
   const urlArg = args[0];
   if (!urlArg) throw new Error('Usage: camofox markdown <url>');
-  if (!MARKDOWN_URL) {
-    throw new Error('CAMOFOX_MARKDOWN_URL is required. Point it at a Cloudflare Browser Rendering /markdown Worker endpoint.');
+  const markdownUrl = resolveMarkdownUrl();
+  if (!markdownUrl) {
+    throw new Error(
+      'CAMOFOX_MARKDOWN_URL is required. Point it at a Cloudflare Browser Rendering /markdown Worker endpoint. ' +
+      'It is read from $CAMOFOX_MARKDOWN_URL, ~/.camofox/markdown-url, or the running container env; if all are ' +
+      'empty (e.g. the container predates markdown support), pass CAMOFOX_MARKDOWN_URL in the env or re-run `camofox serve`.'
+    );
   }
+  const markdownToken = resolveMarkdownToken();
 
   const url = validateHttpUrl(urlArg);
   const controller = new AbortController();
@@ -205,9 +258,9 @@ async function cmdMarkdown(args) {
       'Content-Type': 'application/json',
       'Accept': 'text/markdown, application/json;q=0.9, text/plain;q=0.8',
     };
-    if (MARKDOWN_TOKEN) headers.Authorization = `Bearer ${MARKDOWN_TOKEN}`;
+    if (markdownToken) headers.Authorization = `Bearer ${markdownToken}`;
 
-    const res = await fetch(MARKDOWN_URL, {
+    const res = await fetch(markdownUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify({ url }),
@@ -394,6 +447,15 @@ async function cmdServe(args) {
   const envFlags = ['-e', 'NODE_ENV=production'];
   if (ADMIN_KEY) envFlags.push('-e', `CAMOFOX_ADMIN_KEY=${ADMIN_KEY}`);
   envFlags.push('-e', `CAMOFOX_API_KEY=${apiKey}`);
+  // Stash markdown config in the container env too, so a sandboxed CLI that can't
+  // read ~/.camofox can still recover it via `docker inspect` (see readContainerEnv).
+  const mdUrl = process.env.CAMOFOX_MARKDOWN_URL || readConfigFile(MARKDOWN_URL_FILE);
+  const mdToken = process.env.CAMOFOX_MARKDOWN_TOKEN || readConfigFile(MARKDOWN_TOKEN_FILE);
+  if (mdUrl) envFlags.push('-e', `CAMOFOX_MARKDOWN_URL=${mdUrl}`);
+  if (mdToken) envFlags.push('-e', `CAMOFOX_MARKDOWN_TOKEN=${mdToken}`);
+  // Forward locale/timezone spoofing so it survives container restarts.
+  if (process.env.CAMOFOX_LOCALE) envFlags.push('-e', `CAMOFOX_LOCALE=${process.env.CAMOFOX_LOCALE}`);
+  if (process.env.TZ) envFlags.push('-e', `TZ=${process.env.TZ}`);
   if (process.env.PROXY_HOST) {
     envFlags.push('-e', `PROXY_HOST=${process.env.PROXY_HOST}`);
     if (process.env.PROXY_PORT) envFlags.push('-e', `PROXY_PORT=${process.env.PROXY_PORT}`);

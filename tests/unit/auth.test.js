@@ -213,5 +213,27 @@ describe('lib/auth', () => {
       middleware(req, res, next);
       expect(next).toHaveBeenCalled();
     });
+
+    test('trustLocal allows request with no token even when apiKey set in production', () => {
+      const middleware = requireAuth({ apiKey: 'my-secret', nodeEnv: 'production', trustLocal: true });
+      const req = mockReq({}, '192.168.1.100');
+      const res = mockRes();
+      const next = jest.fn();
+
+      middleware(req, res, next);
+      expect(next).toHaveBeenCalled();
+      expect(res._status).toBeNull();
+    });
+
+    test('trustLocal does not bypass when false (still requires token)', () => {
+      const middleware = requireAuth({ apiKey: 'my-secret', nodeEnv: 'production', trustLocal: false });
+      const req = mockReq({});
+      const res = mockRes();
+      const next = jest.fn();
+
+      middleware(req, res, next);
+      expect(next).not.toHaveBeenCalled();
+      expect(res._status).toBe(403);
+    });
   });
 });
