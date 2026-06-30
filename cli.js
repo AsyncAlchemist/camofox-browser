@@ -3,9 +3,17 @@
 import { execFileSync, spawn } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { randomBytes as cryptoRandomBytes } from 'crypto';
 import { homedir } from 'os';
+import {
+  parseProxyLine,
+  readStoredProxy,
+  writeStoredProxy,
+  clearStoredProxy,
+  storedProxyEnv,
+  PROXY_STORE_PATH,
+} from './lib/proxy-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.CAMOFOX_URL || 'http://127.0.0.1:9377';
@@ -375,6 +383,222 @@ async function cmdCookies(args) {
   console.log(`${data.count} cookies imported for ${USER}`);
 }
 
+// ── Residential proxies (byteful) ────────────────────────────────────────────
+
+const PROXY_LIST_CACHE = join(homedir(), '.camofox', 'proxy-list.json');
+const BYTEFUL_ENV_FILE = join(homedir(), '.camofox', 'byteful.env');
+// Sibling byteful-sdk checkout; override with BYTEFUL_SDK_DIR.
+const BYTEFUL_SDK_DIR = process.env.BYTEFUL_SDK_DIR || join(__dirname, '..', 'byteful-sdk');
+
+// Parse a minimal dotenv (KEY=VALUE, # comments, optional quotes) into an object.
+function parseDotenv(text) {
+  const out = {};
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq < 1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let val = trimmed.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    out[key] = val;
+  }
+  return out;
+}
+
+// Resolve byteful API keys from (1) env, (2) ~/.camofox/byteful.env, (3) the
+// sibling byteful-sdk/.env. Returns { pub, priv } or throws with guidance.
+function resolveBytefulKeys() {
+  let pub = process.env.BYTEFUL_API_PUBLIC_KEY || '';
+  let priv = process.env.BYTEFUL_API_PRIVATE_KEY || '';
+  for (const file of [BYTEFUL_ENV_FILE, join(BYTEFUL_SDK_DIR, '.env')]) {
+    if (pub && priv) break;
+    try {
+      const env = parseDotenv(readFileSync(file, 'utf8'));
+      pub = pub || env.BYTEFUL_API_PUBLIC_KEY || '';
+      priv = priv || env.BYTEFUL_API_PRIVATE_KEY || '';
+    } catch { /* file missing — try the next source */ }
+  }
+  if (!pub || !priv) {
+    throw new Error(
+      'byteful API keys not found. Set BYTEFUL_API_PUBLIC_KEY and BYTEFUL_API_PRIVATE_KEY in the env, ' +
+      `or put them in ${BYTEFUL_ENV_FILE} (or ${join(BYTEFUL_SDK_DIR, '.env')}). ` +
+      'Generate keys at https://dashboard.byteful.com/developer/api-key',
+    );
+  }
+  return { pub, priv };
+}
+
+// Resolve the Python interpreter that has the byteful SDK importable. Prefers
+// $BYTEFUL_PYTHON, then the sibling repo's venv.
+function resolveBytefulPython() {
+  if (process.env.BYTEFUL_PYTHON) return process.env.BYTEFUL_PYTHON;
+  const venv = join(BYTEFUL_SDK_DIR, '.venv', 'bin', 'python');
+  if (existsSync(venv)) return venv;
+  throw new Error(
+    `Could not find the byteful SDK's Python. Looked for ${venv}. ` +
+    'Set BYTEFUL_PYTHON to an interpreter with the byteful package installed, ' +
+    'or BYTEFUL_SDK_DIR to the byteful-sdk checkout.',
+  );
+}
+
+function maskSecret(s) {
+  const str = String(s || '');
+  if (str.length <= 4) return str ? '****' : '';
+  return `${str.slice(0, 2)}****${str.slice(-2)}`;
+}
+
+function describeProxy(p) {
+  const auth = p.username ? `${p.username}:${maskSecret(p.password)}@` : '';
+  const loc = p.country ? ` [${p.country}]` : '';
+  return `${p.protocol || 'http'}://${auth}${p.host}:${p.port}${loc}`;
+}
+
+async function cmdProxyList(args) {
+  const flags = {
+    country: argValue(args, '--country'),
+    count: argValue(args, '--count'),
+    session: argValue(args, '--session') || argValue(args, '--session-type'),
+    format: argValue(args, '--format') || 'standard',
+    city: argValue(args, '--city'),
+    subdivision: argValue(args, '--subdivision'),
+    zip: argValue(args, '--zip'),
+    mode: argValue(args, '--mode'),
+  };
+
+  const { pub, priv } = resolveBytefulKeys();
+  const python = resolveBytefulPython();
+  const script = join(__dirname, 'scripts', 'byteful_residential.py');
+
+  const pyArgs = [script, '--format', flags.format];
+  if (flags.count) pyArgs.push('--count', flags.count);
+  if (flags.session) pyArgs.push('--session-type', flags.session);
+  if (flags.country) pyArgs.push('--country', flags.country);
+  if (flags.city) pyArgs.push('--city', flags.city);
+  if (flags.subdivision) pyArgs.push('--subdivision', flags.subdivision);
+  if (flags.zip) pyArgs.push('--zip', flags.zip);
+  if (flags.mode) pyArgs.push('--mode', flags.mode);
+
+  let stdout;
+  try {
+    stdout = execFileSync(python, pyArgs, {
+      encoding: 'utf8',
+      // Capture stderr (don't inherit) so we control the error message shown.
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, BYTEFUL_API_PUBLIC_KEY: pub, BYTEFUL_API_PRIVATE_KEY: priv },
+    });
+  } catch (err) {
+    // The Python script emits {"error","kind"} on stderr for known failures.
+    const stderr = err.stderr ? String(err.stderr).trim() : '';
+    try {
+      const parsed = JSON.parse(stderr);
+      throw new Error(`byteful: ${parsed.error}${parsed.kind ? ` (${parsed.kind})` : ''}`);
+    } catch (parseErr) {
+      if (parseErr.message.startsWith('byteful:')) throw parseErr;
+      throw new Error(stderr || err.message);
+    }
+  }
+
+  const result = JSON.parse(stdout);
+  const lines = Array.isArray(result.data) ? result.data : [];
+  if (!lines.length) {
+    console.log('No proxies returned.' + (result.message ? ` (${result.message})` : ''));
+    return;
+  }
+
+  // Cache so `proxy use <N>` can reference these by index.
+  mkdirSync(dirname(PROXY_LIST_CACHE), { recursive: true });
+  writeFileSync(PROXY_LIST_CACHE, JSON.stringify({ country: flags.country || '', lines }, null, 2) + '\n', { mode: 0o600 });
+
+  const width = String(lines.length).length;
+  lines.forEach((line, i) => {
+    console.log(`${String(i + 1).padStart(width)}. ${line}`);
+  });
+  console.log(`\n${lines.length} proxies. Assign one with:  camofox proxy use <number>`);
+}
+
+function cmdProxyUse(args) {
+  const target = args[0];
+  if (!target) throw new Error('Usage: camofox proxy use <number|ip:port:user:pass>');
+
+  let line = target;
+  let country = argValue(args, '--country') || '';
+
+  // Numeric arg → index into the last `proxy list` result.
+  if (/^\d+$/.test(target)) {
+    let cache;
+    try { cache = JSON.parse(readFileSync(PROXY_LIST_CACHE, 'utf8')); } catch { cache = null; }
+    if (!cache || !Array.isArray(cache.lines) || !cache.lines.length) {
+      throw new Error('No cached proxy list. Run "camofox proxy list" first, or pass a full ip:port:user:pass line.');
+    }
+    const idx = parseInt(target, 10) - 1;
+    if (idx < 0 || idx >= cache.lines.length) {
+      throw new Error(`Index ${target} out of range (1-${cache.lines.length}).`);
+    }
+    line = cache.lines[idx];
+    if (!country) country = cache.country || '';
+  }
+
+  const parsed = parseProxyLine(line);
+  if (!parsed) {
+    throw new Error(`Could not parse proxy "${line}". Expected ip:port:user:pass or a proxy URL.`);
+  }
+
+  const proxy = {
+    ...parsed,
+    strategy: 'round_robin',
+    country,
+    source: 'byteful-residential',
+  };
+  writeStoredProxy(proxy);
+  console.log(`Assigned proxy: ${describeProxy(proxy)}`);
+  console.log(`Saved to ${PROXY_STORE_PATH}`);
+  console.log('Restart the browser for it to take effect:  camofox stop && camofox start');
+  console.log('(or restart the container:  camofox serve stop && camofox serve -d)');
+}
+
+function cmdProxyShow() {
+  const p = readStoredProxy();
+  if (!p) {
+    console.log('No proxy assigned. Use "camofox proxy list" then "camofox proxy use <number>".');
+    return;
+  }
+  console.log(describeProxy(p));
+  if (p.source) console.log(`source: ${p.source}`);
+  console.log(`stored: ${PROXY_STORE_PATH}`);
+}
+
+function cmdProxyClear() {
+  if (clearStoredProxy()) {
+    console.log('Proxy assignment cleared. Restart the browser to stop using it.');
+  } else {
+    console.log('No proxy assignment to clear.');
+  }
+}
+
+async function cmdProxy(args) {
+  const sub = args[0];
+  switch (sub) {
+    case 'list': return cmdProxyList(args.slice(1));
+    case 'use': return cmdProxyUse(args.slice(1));
+    case 'show': case 'status': return cmdProxyShow();
+    case 'clear': case 'unset': return cmdProxyClear();
+    default:
+      printHelp('proxy');
+      if (sub) process.exitCode = 1;
+      return;
+  }
+}
+
+// Read the value following a `--flag` in an argv array (returns undefined if absent).
+function argValue(args, flag) {
+  const i = args.indexOf(flag);
+  if (i === -1 || i === args.length - 1) return undefined;
+  return args[i + 1];
+}
+
 // ── Docker serve ─────────────────────────────────────────────────────────────
 
 function dockerImageExists() {
@@ -456,11 +680,15 @@ async function cmdServe(args) {
   // Forward locale/timezone spoofing so it survives container restarts.
   if (process.env.CAMOFOX_LOCALE) envFlags.push('-e', `CAMOFOX_LOCALE=${process.env.CAMOFOX_LOCALE}`);
   if (process.env.TZ) envFlags.push('-e', `TZ=${process.env.TZ}`);
-  if (process.env.PROXY_HOST) {
-    envFlags.push('-e', `PROXY_HOST=${process.env.PROXY_HOST}`);
-    if (process.env.PROXY_PORT) envFlags.push('-e', `PROXY_PORT=${process.env.PROXY_PORT}`);
-    if (process.env.PROXY_USERNAME) envFlags.push('-e', `PROXY_USERNAME=${process.env.PROXY_USERNAME}`);
-    if (process.env.PROXY_PASSWORD) envFlags.push('-e', `PROXY_PASSWORD=${process.env.PROXY_PASSWORD}`);
+  // Proxy: an assignment from `camofox proxy use` (stored in ~/.camofox) is
+  // forwarded here since the container can't read the host's home dir. Explicit
+  // PROXY_* env vars override the stored values.
+  const proxyEnv = { ...storedProxyEnv() };
+  for (const k of ['PROXY_STRATEGY', 'PROXY_HOST', 'PROXY_PORT', 'PROXY_USERNAME', 'PROXY_PASSWORD', 'PROXY_COUNTRY']) {
+    if (process.env[k]) proxyEnv[k] = process.env[k];
+  }
+  if (proxyEnv.PROXY_HOST) {
+    for (const [k, v] of Object.entries(proxyEnv)) envFlags.push('-e', `${k}=${v}`);
   }
 
   const detach = args.includes('-d') || args.includes('--detach');
@@ -640,6 +868,7 @@ Commands:
   close-session  Close all tabs for current user
   cookies        Import cookies from a "Copy as cURL" command
   markdown       Capture a URL as Markdown via Cloudflare Browser Rendering
+  proxy          Fetch & assign byteful residential proxies
 
   snapshot       Page accessibility tree
   screenshot     Save screenshot
@@ -686,7 +915,38 @@ Example:
   camofox serve build    Rebuild the Docker image
 
 Builds the Docker image automatically on first run.
-Passes CAMOFOX_ADMIN_KEY, CAMOFOX_API_KEY, and PROXY_* env vars to the container.`,
+Passes CAMOFOX_ADMIN_KEY, CAMOFOX_API_KEY, and PROXY_* env vars to the container.
+A proxy assigned via "camofox proxy use" is forwarded to the container too.`,
+
+  proxy: `Usage: camofox proxy <subcommand>
+
+  camofox proxy list [filters]   Fetch residential proxies from byteful
+  camofox proxy use <n|line>     Assign a proxy (by list number or ip:port:user:pass)
+  camofox proxy show             Show the currently assigned proxy
+  camofox proxy clear            Remove the assignment
+
+Filters for "list":
+  --country <cc>      Country, e.g. us, ar
+  --count <n>         How many proxies to fetch
+  --session <type>    sticky | rotating
+  --format <fmt>      standard (ip:port:user:pass), http, https, socks5, socks5h
+  --city <alias>      City alias
+  --subdivision <id>  Subdivision id
+  --zip <id>          ZIP code id
+  --mode <mode>       general | size | speed
+
+Assignment persists to ~/.camofox/proxy.json and applies on the next browser
+start (camofox stop && camofox start, or restart the container). Explicit
+PROXY_* env vars always override the stored assignment.
+
+Auth: set BYTEFUL_API_PUBLIC_KEY / BYTEFUL_API_PRIVATE_KEY in the env, or in
+~/.camofox/byteful.env, or in the sibling byteful-sdk/.env. The byteful SDK is
+invoked via its Python venv (override with BYTEFUL_PYTHON / BYTEFUL_SDK_DIR).
+
+Examples:
+  camofox proxy list --country us --count 20 --session sticky
+  camofox proxy use 3
+  camofox proxy use 1.2.3.4:8080:user:pass --country us`,
 
   open: `Usage: camofox open <url>
 
@@ -924,6 +1184,7 @@ async function main() {
     case 'start': return cmdStart();
     case 'stop': return cmdStop();
     case 'serve': return cmdServe(args.slice(1));
+    case 'proxy': return cmdProxy(args.slice(1));
   }
 
   // Tab commands: command first, then tab identifier

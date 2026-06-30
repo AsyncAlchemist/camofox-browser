@@ -145,7 +145,9 @@ docker run -p 9377:9377 camofox-browser
 
 - `server.js` - Camoufox engine (routes + browser logic only -- NO `process.env` or `child_process`)
 - `lib/openapi.js` - OpenAPI spec generation via swagger-jsdoc + docs route setup
-- `lib/config.js` - All `process.env` reads centralized here
+- `lib/config.js` - All `process.env` reads centralized here (also reads the assigned proxy from `lib/proxy-store.js` as a `PROXY_*` fallback)
+- `lib/proxy-store.js` - Parse/persist the residential proxy assigned via `camofox proxy use` (`~/.camofox/proxy.json`)
+- `scripts/byteful_residential.py` - Bridge to the byteful SDK's `residential_list()` (invoked by `camofox proxy list`)
 - `plugins/youtube/youtube.js` - YouTube transcript extraction via yt-dlp (`child_process` isolated here)
 - `lib/launcher.js` - Subprocess spawning (`child_process` isolated here)
 - `lib/cookies.js` - Cookie file I/O

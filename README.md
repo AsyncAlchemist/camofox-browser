@@ -379,6 +379,33 @@ When a proxy is configured:
 - Browser fingerprint (language, timezone, coordinates) is consistent with the proxy location
 - Without a proxy, defaults to `en-US`, `America/Los_Angeles`, San Francisco coordinates
 
+#### Residential proxies via byteful
+
+`camofox proxy` fetches residential proxies from [byteful](https://byteful.com/)
+(through the sibling [`byteful-sdk`](../byteful-sdk)) and assigns one to the
+browser — no manual `PROXY_*` wiring.
+
+```bash
+# Fetch a batch of sticky US residential proxies (numbered)
+camofox proxy list --country us --count 20 --session sticky
+
+# Assign one by its list number (or paste a full ip:port:user:pass line)
+camofox proxy use 3
+
+# Inspect / remove the current assignment
+camofox proxy show
+camofox proxy clear
+```
+
+The assignment is saved to `~/.camofox/proxy.json` and applied on the next
+browser start (`camofox stop && camofox start`, or restart the container).
+Explicit `PROXY_*` env vars always override it.
+
+Auth keys are read from `BYTEFUL_API_PUBLIC_KEY` / `BYTEFUL_API_PRIVATE_KEY`
+in the environment, `~/.camofox/byteful.env`, or the sibling `byteful-sdk/.env`.
+The SDK is invoked through its Python venv; override the interpreter or checkout
+location with `BYTEFUL_PYTHON` / `BYTEFUL_SDK_DIR`.
+
 ### Telemetry
 
 Browser automation fails in ways that are hard to predict -- Cloudflare challenges, site redesigns breaking selectors, redirect loops, dialog storms, renderer crashes. The scope is wide and the failure modes are diverse. Without telemetry, the only signal is "it didn't work."

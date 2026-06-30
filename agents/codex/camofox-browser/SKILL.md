@@ -81,8 +81,14 @@ camofox close-session
 camofox cookies
 camofox transcript <youtube-url>
 camofox markdown <url>
+camofox proxy <list|use|show|clear>
 camofox serve [-d|status|stop|build]
 ```
+
+`camofox proxy` fetches byteful residential proxies and assigns one to the browser
+(`proxy list --country us --count 20`, then `proxy use <number>`). The assignment is
+saved to `~/.camofox/proxy.json` and applies on the next browser start, so restart the
+engine after assigning. Needs `BYTEFUL_API_PUBLIC_KEY` / `BYTEFUL_API_PRIVATE_KEY`.
 
 Tab commands use `camofox <command> <tab> [args...]`, where `<tab>` can be a numeric index, domain substring, or UUID prefix:
 

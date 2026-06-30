@@ -19,6 +19,7 @@ camofox close-session           # Close all tabs for current user
 camofox cookies                 # Import cookies from a "Copy as cURL" command
 camofox transcript <yt-url>     # Extract YouTube captions
 camofox markdown <url>          # Capture rendered URL as Markdown via configured Cloudflare Worker
+camofox proxy <sub>             # Fetch/assign byteful residential proxies (list|use|show|clear)
 camofox start                   # Warm the browser engine (no tab)
 camofox stop                    # Stop the browser engine (needs CAMOFOX_ADMIN_KEY)
 ```
@@ -101,6 +102,19 @@ Verify it is up with `camofox health`. If health shows `browserConnected: false`
 ## Markdown Capture
 
 Use `camofox markdown <url>` when `CAMOFOX_MARKDOWN_URL` is configured and you need a full rendered Markdown page artifact. It prints Markdown to stdout on success. It writes errors to stderr and exits non-zero on failure. Fall back to `snapshot` or interactive Camofox browsing when the Markdown endpoint is blocked, empty, stale, or missing content.
+
+## Residential Proxies
+
+When a task needs traffic to egress from a specific country/region (geo-restricted content, localized pricing, or to avoid an IP block), assign a byteful residential proxy:
+
+```bash
+camofox proxy list --country us --count 20 --session sticky   # fetch a numbered batch
+camofox proxy use 3                                           # assign one by list number
+camofox proxy show                                            # confirm the current assignment
+camofox proxy clear                                           # remove it
+```
+
+The assignment persists to `~/.camofox/proxy.json` and takes effect on the **next browser start**, so restart the engine after assigning: `camofox stop && camofox start` (or `camofox serve stop && camofox serve -d` for Docker). Requires byteful API keys (`BYTEFUL_API_PUBLIC_KEY` / `BYTEFUL_API_PRIVATE_KEY`, or `~/.camofox/byteful.env`). Note: this sets the exit IP only; for a coherent fingerprint also set `CAMOFOX_LOCALE` and `TZ` to match the proxy's country before starting.
 
 ## Authentication
 

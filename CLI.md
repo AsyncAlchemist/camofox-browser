@@ -24,6 +24,10 @@ All config is via environment variables:
 | `CAMOFOX_MARKDOWN_URL` | Cloudflare Browser Rendering Markdown endpoint; falls back to `~/.camofox/markdown-url` | - |
 | `CAMOFOX_MARKDOWN_TOKEN` | Optional bearer token for Markdown endpoint; falls back to `~/.camofox/markdown-token` | - |
 | `CAMOFOX_MARKDOWN_TIMEOUT_MS` | Markdown endpoint timeout | `45000` |
+| `BYTEFUL_API_PUBLIC_KEY` | byteful API public key (for `proxy list`); falls back to `~/.camofox/byteful.env` or `byteful-sdk/.env` | - |
+| `BYTEFUL_API_PRIVATE_KEY` | byteful API private key (for `proxy list`) | - |
+| `BYTEFUL_PYTHON` | Python interpreter with the byteful SDK installed | `byteful-sdk/.venv/bin/python` |
+| `BYTEFUL_SDK_DIR` | Path to the byteful-sdk checkout | `../byteful-sdk` |
 
 ## Server
 
@@ -97,6 +101,28 @@ If `CAMOFOX_MARKDOWN_URL` / `CAMOFOX_MARKDOWN_TOKEN` are unset, the CLI reads `~
 ```bash
 camofox close-session           # closes all tabs for the current user
 ```
+
+### Residential proxies (byteful)
+
+Fetch residential proxies from [byteful](https://byteful.com/) (via the sibling
+`byteful-sdk`) and assign one to the browser.
+
+```bash
+camofox proxy list --country us --count 20 --session sticky   # fetch (numbered)
+camofox proxy use 3                                           # assign by list number
+camofox proxy use 1.2.3.4:8080:user:pass --country us         # …or paste a line
+camofox proxy show                                            # show current assignment
+camofox proxy clear                                           # remove assignment
+```
+
+`list` filters: `--country <cc>`, `--count <n>`, `--session <sticky|rotating>`,
+`--format <standard|http|https|socks5|socks5h>`, `--city <alias>`,
+`--subdivision <id>`, `--zip <id>`, `--mode <general|size|speed>`.
+
+The assignment is saved to `~/.camofox/proxy.json` and applied on the next
+browser start (`camofox stop && camofox start`, or restart the container).
+Explicit `PROXY_*` env vars always override it. API keys and the SDK interpreter
+are resolved from the `BYTEFUL_*` variables in [Configuration](#configuration).
 
 ## Tab Commands
 
