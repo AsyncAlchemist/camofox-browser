@@ -16,6 +16,12 @@ import {
 } from './lib/proxy-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Autoload .env (next to the CLI) so configured vars "just work" without the
+// caller having to source it. Real environment variables win — .env only fills
+// in keys that aren't already set. Runs before the env-derived constants below.
+loadEnvFile(join(__dirname, '.env'));
+
 const BASE = process.env.CAMOFOX_URL || 'http://127.0.0.1:9377';
 const USER = process.env.CAMOFOX_USER || 'cli';
 const SESSION = process.env.CAMOFOX_SESSION || 'default';
@@ -26,6 +32,16 @@ const CONTAINER_PORT = parseInt(new URL(BASE).port || '9377', 10);
 const KEY_FILE = join(homedir(), '.camofox', 'api-key');
 const MARKDOWN_URL_FILE = join(homedir(), '.camofox', 'markdown-url');
 const MARKDOWN_TOKEN_FILE = join(homedir(), '.camofox', 'markdown-token');
+
+// Apply a .env file to process.env without overriding already-set vars.
+// Uses parseDotenv (defined below; function declarations are hoisted).
+function loadEnvFile(path) {
+  let text;
+  try { text = readFileSync(path, 'utf8'); } catch { return; }
+  for (const [key, value] of Object.entries(parseDotenv(text))) {
+    if (process.env[key] === undefined) process.env[key] = value;
+  }
+}
 
 function readConfigFile(path) {
   try { return readFileSync(path, 'utf8').trim(); } catch { return ''; }

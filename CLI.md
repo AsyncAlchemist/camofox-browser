@@ -13,7 +13,9 @@ If installed globally (`npm install -g`), the `camofox` command is available eve
 
 ## Configuration
 
-All config is via environment variables:
+All config is via environment variables. The CLI autoloads a `.env` file next
+to it (the repo root) at startup, so anything set there "just works" without
+sourcing — real environment variables still take precedence over `.env`.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
