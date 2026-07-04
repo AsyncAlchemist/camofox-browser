@@ -8,7 +8,7 @@
 import { execFile } from 'child_process';
 import { createServer } from 'http';
 import { promisify } from 'util';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -394,6 +394,106 @@ describe('CLI', () => {
       const r = await run(srv.url, 'badcommand');
       expect(r.code).not.toBe(0);
       expect(r.stderr).toContain('Unknown command');
+    });
+  });
+
+  // Multi-agent / shared-host CLI ergonomics (P2–P5). All behavior lives in
+  // cli.js; nothing here touches the upstream server.
+  describe('multi-agent auth & serve', () => {
+    // A server that records the Authorization header of the last request.
+    function startHeaderCapture() {
+      return new Promise((resolve) => {
+        let captured = null;
+        const server = createServer((req, res) => {
+          captured = req.headers;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, engine: 'camoufox' }));
+        });
+        server.listen(0, '127.0.0.1', () => {
+          resolve({ server, url: `http://127.0.0.1:${server.address().port}`, auth: () => captured?.authorization });
+        });
+      });
+    }
+
+    // A temp HOME seeded with ~/.camofox key files.
+    function makeHome(files = {}) {
+      const home = mkdtempSync(join(tmpdir(), 'camofox-cli-home-'));
+      tempHomes.push(home);
+      mkdirSync(join(home, '.camofox'), { recursive: true });
+      for (const [name, content] of Object.entries(files)) {
+        writeFileSync(join(home, '.camofox', name), content);
+      }
+      return home;
+    }
+
+    // A stub `docker` on PATH that appends its `run` argv to a log and no-ops
+    // everything else (ps => not running, image inspect => exists).
+    function makeDockerStub() {
+      const dir = mkdtempSync(join(tmpdir(), 'camofox-cli-serve-'));
+      tempHomes.push(dir);
+      const home = join(dir, 'home');
+      mkdirSync(join(home, '.camofox'), { recursive: true });
+      const bin = join(dir, 'bin');
+      mkdirSync(bin, { recursive: true });
+      const log = join(dir, 'docker.log');
+      writeFileSync(join(bin, 'docker'),
+        `#!/bin/sh\ncase "$1" in\n  ps) exit 0;;\n  image) exit 0;;\n  run) shift; printf '%s\\n' "$*" >> "${log}"; exit 0;;\n  *) exit 0;;\nesac\n`,
+        { mode: 0o755 });
+      return { home, bin, readLog: () => { try { return readFileSync(log, 'utf8'); } catch { return ''; } } };
+    }
+
+    test('prefers the access key over the api key as bearer', async () => {
+      srv = await startHeaderCapture();
+      const home = makeHome({ 'api-key': 'APIKEY\n', 'access-key': 'ACCESSKEY\n' });
+      await runWithEnv(srv.url, { HOME: home, CAMOFOX_API_KEY: '', CAMOFOX_ACCESS_KEY: '' }, 'health');
+      expect(srv.auth()).toBe('Bearer ACCESSKEY');
+    });
+
+    test('falls back to the api key when no access key is configured', async () => {
+      srv = await startHeaderCapture();
+      const home = makeHome({ 'api-key': 'APIKEY\n' });
+      await runWithEnv(srv.url, { HOME: home, CAMOFOX_API_KEY: '', CAMOFOX_ACCESS_KEY: '' }, 'health');
+      expect(srv.auth()).toBe('Bearer APIKEY');
+    });
+
+    test('CAMOFOX_ACCESS_KEY env overrides the access-key file', async () => {
+      srv = await startHeaderCapture();
+      const home = makeHome({ 'access-key': 'FILEACCESS\n' });
+      await runWithEnv(srv.url, { HOME: home, CAMOFOX_API_KEY: '', CAMOFOX_ACCESS_KEY: 'ENVACCESS' }, 'health');
+      expect(srv.auth()).toBe('Bearer ENVACCESS');
+    });
+
+    test('non-loopback CAMOFOX_URL gives a remote-aware connection error (no serve hint)', async () => {
+      const home = makeHome();
+      const r = await runWithEnv('http://0.0.0.0:1', { HOME: home }, 'health');
+      expect(r.code).not.toBe(0);
+      expect(r.stderr).toContain('remote server');
+      expect(r.stderr).not.toContain('camofox serve -d');
+    });
+
+    test('serve --publish off-loopback --durable assembles a gated, durable docker run', async () => {
+      const { home, bin, readLog } = makeDockerStub();
+      await runWithEnv('http://127.0.0.1:9377',
+        { HOME: home, PATH: `${bin}:${process.env.PATH}`, CAMOFOX_API_KEY: '', CAMOFOX_ACCESS_KEY: '' },
+        'serve', '--publish', '0.0.0.0', '--durable');
+      const logged = readLog();
+      expect(logged).toContain('-p 0.0.0.0:9377:9377');
+      expect(logged).toContain('--restart unless-stopped');
+      expect(logged).toContain('-v camofox-state:/root/.camofox');
+      expect(logged).toContain('CAMOFOX_ACCESS_KEY=');
+      expect(logged).not.toContain('--rm');
+    });
+
+    test('serve -d stays on loopback with --rm and no access key', async () => {
+      const { home, bin, readLog } = makeDockerStub();
+      await runWithEnv('http://127.0.0.1:9377',
+        { HOME: home, PATH: `${bin}:${process.env.PATH}`, CAMOFOX_API_KEY: '', CAMOFOX_ACCESS_KEY: '' },
+        'serve', '-d');
+      const logged = readLog();
+      expect(logged).toContain('--rm');
+      expect(logged).toContain('-p 127.0.0.1:9377:9377');
+      expect(logged).not.toContain('CAMOFOX_ACCESS_KEY=');
+      expect(logged).not.toContain('--restart');
     });
   });
 });

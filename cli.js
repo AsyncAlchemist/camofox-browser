@@ -42,8 +42,26 @@ const MARKDOWN_TIMEOUT_MS = parseInt(process.env.CAMOFOX_MARKDOWN_TIMEOUT_MS || 
 const CONTAINER_NAME = 'camofox';
 const CONTAINER_PORT = parseInt(new URL(BASE).port || '9377', 10);
 const KEY_FILE = join(homedir(), '.camofox', 'api-key');
+const ACCESS_KEY_FILE = join(homedir(), '.camofox', 'access-key');
 const MARKDOWN_URL_FILE = join(homedir(), '.camofox', 'markdown-url');
 const MARKDOWN_TOKEN_FILE = join(homedir(), '.camofox', 'markdown-token');
+// Named Docker volume mounted at the container's ~/.camofox in durable mode.
+const STATE_VOLUME_DEFAULT = 'camofox-state';
+
+// Is a hostname loopback (so the CLI can tell a local server from a remote one)?
+// Covers localhost, IPv4 127.0.0.0/8, and IPv6 ::1 (with optional [] brackets).
+function isLoopbackHostname(h) {
+  if (!h) return false;
+  const host = h.replace(/^\[|\]$/g, '');
+  return host === 'localhost' || host === '::1' || /^127\./.test(host);
+}
+
+// Does CAMOFOX_URL point at a server on this machine? Remote targets switch the
+// CLI into a pure client: no Docker shell-outs, and remote-aware error hints.
+function serverIsLocal() {
+  try { return isLoopbackHostname(new URL(BASE).hostname); }
+  catch { return true; }
+}
 
 // Apply a .env file to process.env without overriding already-set vars.
 // Uses parseDotenv (defined below; function declarations are hoisted).
@@ -74,6 +92,12 @@ function resolveMarkdownToken() { return MARKDOWN_TOKEN || readContainerEnv('CAM
 // without manually wiring up keys. Reads all env once and caches it.
 let _containerEnvCache;
 function readContainerEnv(name) {
+  // Pure-client mode: never shell out to Docker. Either the operator opted out
+  // explicitly (CAMOFOX_NO_DOCKER), or the server is remote — a local
+  // `docker inspect camofox` would describe a different/absent container. Bot
+  // users on a shared host who lack Docker access rely on this so key/config
+  // discovery stays env/file-only and never trips a permission error.
+  if (process.env.CAMOFOX_NO_DOCKER || !serverIsLocal()) return '';
   if (_containerEnvCache === undefined) {
     try {
       const out = execFileSync(
@@ -111,6 +135,39 @@ function ensureApiKey() {
   return key;
 }
 
+// The access key gates the whole API when the server runs off-loopback. Sourced
+// from its own slot (env > ~/.camofox/access-key > running container) so operators
+// no longer have to smuggle it through the api-key slot.
+let _accessKeyCache;
+function readAccessKey() {
+  if (_accessKeyCache !== undefined) return _accessKeyCache;
+  if (process.env.CAMOFOX_ACCESS_KEY) return (_accessKeyCache = process.env.CAMOFOX_ACCESS_KEY.trim());
+  try {
+    const fromFile = readFileSync(ACCESS_KEY_FILE, 'utf8').trim();
+    if (fromFile) return (_accessKeyCache = fromFile);
+  } catch { /* file missing or unreadable (e.g. sandbox) — try the container */ }
+  return (_accessKeyCache = readContainerEnv('CAMOFOX_ACCESS_KEY'));
+}
+
+function ensureAccessKey() {
+  const existing = readAccessKey();
+  if (existing) return existing;
+  const key = cryptoRandomBytes(32).toString('hex');
+  mkdirSync(dirname(ACCESS_KEY_FILE), { recursive: true });
+  writeFileSync(ACCESS_KEY_FILE, key + '\n', { mode: 0o600 });
+  _accessKeyCache = key;
+  return key;
+}
+
+// Bearer token for API calls. The access key is the server's superkey: accepted
+// on EVERY route (per-route auth AND the global access-key gate), so when one is
+// configured it's the only token that works everywhere. The api key satisfies
+// per-route auth only, so it's the fallback for the default loopback `serve`
+// (which sets no access key) — keeping existing single-user setups unchanged.
+function readBearerToken() {
+  return readAccessKey() || readApiKey();
+}
+
 const TAB_COMMANDS = new Set([
   'snapshot', 'screenshot', 'goto', 'click', 'type', 'press', 'scroll',
   'back', 'forward', 'refresh', 'wait', 'links', 'images', 'downloads',
@@ -124,8 +181,8 @@ async function api(method, path, body, extraHeaders) {
   // endpoints (evaluate, cookies, traces, ...) require it when CAMOFOX_API_KEY
   // is set on the server. extraHeaders can still override.
   const defaultHeaders = {};
-  const apiKey = readApiKey();
-  if (apiKey) defaultHeaders['Authorization'] = `Bearer ${apiKey}`;
+  const token = readBearerToken();
+  if (token) defaultHeaders['Authorization'] = `Bearer ${token}`;
   const opts = { method, headers: { ...defaultHeaders, ...extraHeaders } };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
@@ -140,14 +197,16 @@ async function api(method, path, body, extraHeaders) {
   }
   const data = await res.json();
   if (!res.ok) {
-    if (res.status === 403 && !apiKey) {
+    if ((res.status === 403 || res.status === 401) && !token) {
       throw new Error(
-        `${data.error || 'Forbidden'} — this endpoint requires the API key, but none was found. ` +
-        `The CLI reads it from $CAMOFOX_API_KEY or ~/.camofox/api-key; inside a restricted sandbox that ` +
-        `file is often unreadable, so the CLI silently sends no key and the server returns 403. ` +
+        `${data.error || 'Forbidden'} — this endpoint requires a key, but none was found. ` +
+        `The CLI reads a bearer token from (in order) $CAMOFOX_ACCESS_KEY, ~/.camofox/access-key, ` +
+        `$CAMOFOX_API_KEY, or ~/.camofox/api-key; inside a restricted sandbox those files are often ` +
+        `unreadable, so the CLI silently sends no key and the server rejects the call. ` +
         `Fixes: (a) run the server bound to loopback (CAMOFOX_HOST=127.0.0.1) — auth is then bypassed for all ` +
-        `local callers; (b) add ~/.camofox to the sandbox filesystem allowRead; or (c) pass CAMOFOX_API_KEY in the env. ` +
-        `(Read-only verbs like snapshot/links/goto need no key and work regardless.)`
+        `local callers; (b) add ~/.camofox to the sandbox filesystem allowRead; or (c) pass CAMOFOX_ACCESS_KEY ` +
+        `(access-gated server) or CAMOFOX_API_KEY in the env. ` +
+        `(Read-only verbs like snapshot/links/goto need no key on an api-key-only server.)`
       );
     }
     throw new Error(data.error || `HTTP ${res.status}`);
@@ -719,14 +778,47 @@ async function cmdServe(args) {
     for (const [k, v] of Object.entries(proxyEnv)) envFlags.push('-e', `${k}=${v}`);
   }
 
-  const detach = args.includes('-d') || args.includes('--detach');
+  // P2 — publish host. Default loopback for safety; --publish 0.0.0.0 (or a chosen
+  // interface / CAMOFOX_PUBLISH) exposes the server to the network. The in-container
+  // server already binds 0.0.0.0 by default, so publishing off-loopback is enough
+  // to make it reachable — but that also means every read route would be open to the
+  // network. So off-loopback publish auto-ensures a CAMOFOX_ACCESS_KEY and passes it
+  // in, which gates EVERY route (see accessKeyMiddleware). The api key alone only
+  // guards a subset, so it is not sufficient once exposed.
+  const publishHost = argValue(args, '--publish') || process.env.CAMOFOX_PUBLISH || '127.0.0.1';
+  const offLoopback = !isLoopbackHostname(publishHost);
+  if (offLoopback) {
+    const accessKey = ensureAccessKey();
+    envFlags.push('-e', `CAMOFOX_ACCESS_KEY=${accessKey}`);
+  }
+
+  // P3 — durability. --durable is shorthand for: detached, restart on boot, and a
+  // named volume holding ~/.camofox (keys/cookies/profiles/traces) so the instance
+  // survives host reboots. --restart / --volume override the pieces individually.
+  // Docker forbids --rm together with a restart policy, so --rm is dropped when a
+  // restart policy is in effect.
+  const durable = args.includes('--durable');
+  const restartPolicy = argValue(args, '--restart') || (durable ? 'unless-stopped' : null);
+  const stateVolume = argValue(args, '--volume') || process.env.CAMOFOX_STATE_VOLUME || (durable ? STATE_VOLUME_DEFAULT : null);
+  const detach = args.includes('-d') || args.includes('--detach') || durable;
+
   const dockerArgs = [
-    'run', '--rm', '--name', CONTAINER_NAME,
-    '-p', `127.0.0.1:${CONTAINER_PORT}:9377`,
+    'run', '--name', CONTAINER_NAME,
+    ...(restartPolicy ? ['--restart', restartPolicy] : ['--rm']),
+    '-p', `${publishHost}:${CONTAINER_PORT}:9377`,
+    ...(stateVolume ? ['-v', `${stateVolume}:/root/.camofox`] : []),
     ...envFlags,
     ...(detach ? ['-d'] : []),
     CONTAINER_NAME,
   ];
+
+  if (offLoopback) {
+    console.log(`⚠ Publishing on ${publishHost}:${CONTAINER_PORT} — reachable off-loopback.`);
+    console.log(`  Every route now requires the access key (stored at ${ACCESS_KEY_FILE}).`);
+    console.log(`  Ensure a host firewall restricts who can reach this port.`);
+  }
+  if (restartPolicy) console.log(`Restart policy: ${restartPolicy}`);
+  if (stateVolume) console.log(`State volume: ${stateVolume} -> /root/.camofox`);
 
   if (detach) {
     execFileSync('docker', dockerArgs, { stdio: 'inherit' });
@@ -912,10 +1004,17 @@ Commands:
   Run "camofox help <command>" for details.
 
 Environment:
-  CAMOFOX_URL       Server URL (default: http://127.0.0.1:9377)
-  CAMOFOX_USER      User ID (default: cli)
-  CAMOFOX_SESSION   Session key (default: default)
-  CAMOFOX_ADMIN_KEY Admin key (required for stop)
+  CAMOFOX_URL        Server URL (default: http://127.0.0.1:9377). A non-loopback
+                     URL puts the CLI in pure-client mode (no Docker calls).
+  CAMOFOX_USER       User ID (default: the OS username; scopes tabs/cookies/sessions)
+  CAMOFOX_SESSION    Session key (default: default)
+  CAMOFOX_ACCESS_KEY Bearer for an access-gated server (or ~/.camofox/access-key).
+                     Preferred over the api key — it is accepted on every route.
+  CAMOFOX_API_KEY    Bearer for an api-key-only server (or ~/.camofox/api-key)
+  CAMOFOX_ADMIN_KEY  Admin key (required for stop)
+  CAMOFOX_NO_DOCKER  Force pure-client mode: never shell out to Docker for keys/config
+  CAMOFOX_PUBLISH        serve: default --publish host
+  CAMOFOX_STATE_VOLUME   serve: default --volume name (durable mode)
   CAMOFOX_MARKDOWN_URL   Markdown Worker endpoint (or ~/.camofox/markdown-url)
   CAMOFOX_MARKDOWN_TOKEN Markdown Worker bearer token (or ~/.camofox/markdown-token)`,
   markdown: `Usage: camofox markdown <url>
@@ -934,17 +1033,33 @@ Environment:
 Example:
   camofox markdown https://example.com > page.md`,
 
-  serve: `Usage: camofox serve [subcommand]
+  serve: `Usage: camofox serve [subcommand] [flags]
 
-  camofox serve          Start server in foreground (ctrl-c to stop)
-  camofox serve -d       Start detached (background)
-  camofox serve stop     Stop the container
-  camofox serve status   Check if running
-  camofox serve build    Rebuild the Docker image
+  camofox serve            Start server in foreground, loopback only (ctrl-c to stop)
+  camofox serve -d         Start detached (background)
+  camofox serve --durable  Detached + restarts on boot + persistent state volume
+  camofox serve stop       Stop the container
+  camofox serve status     Check if running
+  camofox serve build      Rebuild the Docker image
 
-Builds the Docker image automatically on first run.
-Passes CAMOFOX_ADMIN_KEY, CAMOFOX_API_KEY, and PROXY_* env vars to the container.
-A proxy assigned via "camofox proxy use" is forwarded to the container too.`,
+Flags (start subcommand):
+  --publish <host>    Host interface to publish on (default: 127.0.0.1, or
+                      CAMOFOX_PUBLISH). Use 0.0.0.0 to expose to the network.
+                      Publishing off-loopback auto-generates a CAMOFOX_ACCESS_KEY
+                      (~/.camofox/access-key) and gates EVERY route with it.
+  --durable           Imply -d, add --restart unless-stopped, and mount a named
+                      volume at the container's ~/.camofox (keys/cookies/profiles).
+  --restart <policy>  Docker restart policy (default with --durable: unless-stopped).
+                      Setting a policy drops --rm.
+  --volume <name>     Named state volume mounted at ~/.camofox
+                      (default with --durable: ${STATE_VOLUME_DEFAULT}, or CAMOFOX_STATE_VOLUME).
+
+Multi-agent / shared-host example (networked, durable, all routes gated):
+  camofox serve --publish 0.0.0.0 --durable
+
+Builds the Docker image automatically on first run. Passes CAMOFOX_ADMIN_KEY,
+CAMOFOX_API_KEY, CAMOFOX_ACCESS_KEY (when off-loopback), and PROXY_* env to the
+container. A proxy assigned via "camofox proxy use" is forwarded too.`,
 
   proxy: `Usage: camofox proxy <subcommand>
 
@@ -1248,7 +1363,14 @@ async function main() {
 main().catch(err => {
   if (err.cause?.code === 'ECONNREFUSED' || err.message === 'fetch failed') {
     console.error(`Cannot connect to camofox server at ${BASE}`);
-    console.error(`\nStart the server with:\n  camofox serve -d\n`);
+    if (serverIsLocal()) {
+      console.error(`\nStart the server with:\n  camofox serve -d\n`);
+    } else {
+      // Remote target (CAMOFOX_URL): this box is a pure client — don't suggest
+      // `serve` (which needs Docker). The server lives elsewhere.
+      console.error(`\nThis is a remote server (CAMOFOX_URL=${BASE}). Check that it is running and that\n` +
+        `the host firewall / network allows this client to reach it.\n`);
+    }
   } else {
     console.error(err.message);
   }
