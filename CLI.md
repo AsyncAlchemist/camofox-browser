@@ -19,10 +19,15 @@ sourcing — real environment variables still take precedence over `.env`.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CAMOFOX_URL` | Server base URL | `http://127.0.0.1:9377` |
+| `CAMOFOX_URL` | Server base URL. A non-loopback URL puts the CLI in pure-client mode (no Docker calls). | `http://127.0.0.1:9377` |
 | `CAMOFOX_USER` | User ID for session isolation | OS username (e.g. `selden`); `cli` if undeterminable |
 | `CAMOFOX_SESSION` | Session key for tab grouping | `default` |
+| `CAMOFOX_ACCESS_KEY` | Bearer for an **access-gated** server (falls back to `~/.camofox/access-key`). Preferred over the api key — the server accepts it on **every** route. | - |
+| `CAMOFOX_API_KEY` | Bearer for an **api-key-only** server (falls back to `~/.camofox/api-key`). Used when no access key is configured. | - |
 | `CAMOFOX_ADMIN_KEY` | Admin key (required for `stop`) | - |
+| `CAMOFOX_NO_DOCKER` | Force pure-client mode: never shell out to Docker for key/config discovery. | - |
+| `CAMOFOX_PUBLISH` | `serve`: default `--publish` host | `127.0.0.1` |
+| `CAMOFOX_STATE_VOLUME` | `serve`: default `--volume` name (durable mode) | `camofox-state` |
 | `CAMOFOX_MARKDOWN_URL` | Cloudflare Browser Rendering Markdown endpoint; falls back to `~/.camofox/markdown-url` | - |
 | `CAMOFOX_MARKDOWN_TOKEN` | Bearer token for the Markdown endpoint (the Worker requires it); falls back to `~/.camofox/markdown-token` | - |
 | `CAMOFOX_MARKDOWN_TIMEOUT_MS` | Markdown endpoint timeout | `45000` |
@@ -36,14 +41,51 @@ sourcing — real environment variables still take precedence over `.env`.
 Start and manage the camofox server via Docker. The image is built automatically on first run.
 
 ```bash
-camofox serve                   # start in foreground (ctrl-c to stop)
+camofox serve                   # start in foreground, loopback only (ctrl-c to stop)
 camofox serve -d                # start detached (background)
+camofox serve --durable         # detached + restart on boot + persistent state volume
 camofox serve stop              # stop the container
 camofox serve status            # check if running
 camofox serve build             # rebuild the Docker image
 ```
 
-The container binds to the port from `CAMOFOX_URL` (default 9377). Environment variables like `CAMOFOX_ADMIN_KEY`, `CAMOFOX_API_KEY`, and `PROXY_*` are passed through to the container automatically.
+The container binds to the port from `CAMOFOX_URL` (default 9377). By default the port is published on `127.0.0.1` only. Environment variables like `CAMOFOX_ADMIN_KEY`, `CAMOFOX_API_KEY`, and `PROXY_*` are passed through to the container automatically.
+
+### Start flags
+
+| Flag | Effect |
+|------|--------|
+| `--publish <host>` | Host interface to publish on (default `127.0.0.1`, or `CAMOFOX_PUBLISH`). Use `0.0.0.0` to expose to the network. |
+| `--durable` | Imply `-d`, add `--restart unless-stopped`, and mount a named volume at the container's `~/.camofox` (keys/cookies/profiles/traces). |
+| `--restart <policy>` | Docker restart policy (default with `--durable`: `unless-stopped`). Setting a policy drops `--rm`. |
+| `--volume <name>` | Named state volume mounted at `~/.camofox` (default with `--durable`: `camofox-state`, or `CAMOFOX_STATE_VOLUME`). |
+
+### Multi-agent / shared-host deployment
+
+To run **one instance serving many bots on a networked host**, publish off-loopback and make it durable:
+
+```bash
+camofox serve --publish 0.0.0.0 --durable
+```
+
+Publishing off-loopback is a security boundary, so `serve` handles it for you:
+
+- It **auto-generates a `CAMOFOX_ACCESS_KEY`** (stored at `~/.camofox/access-key`) and passes it to the container, which gates **every** route with it. (The api key alone only guards a subset of routes, so it is not sufficient once the port is exposed.)
+- `--durable` keeps the instance up across reboots and persists `~/.camofox` in the `camofox-state` volume.
+
+**Still your responsibility:** restrict who can reach the port with a host firewall.
+
+Clients (local or remote bots) then just need that access key, via `CAMOFOX_ACCESS_KEY` or `~/.camofox/access-key`:
+
+```bash
+export CAMOFOX_URL=http://skynet.internal:9377
+export CAMOFOX_ACCESS_KEY=…            # or drop it in ~/.camofox/access-key
+camofox open https://example.com
+```
+
+A non-loopback `CAMOFOX_URL` (or `CAMOFOX_NO_DOCKER=1`) puts the CLI in **pure-client mode**: it never shells out to Docker for key/config discovery, so bot users on a shared host don't need Docker access.
+
+> **Note on isolation:** each caller's tabs/cookies/sessions are scoped by `CAMOFOX_USER` (defaults to the OS username), so distinct users get isolated browser sessions. This is ideal for **mutually-trusted** bots. `userId` is not itself authenticated by the access key, so mutually-*untrusted* bots on one instance are not isolated from each other — give each trust domain its own instance (and access key).
 
 ## Session Commands
 
