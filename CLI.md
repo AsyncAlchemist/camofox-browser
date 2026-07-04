@@ -62,6 +62,9 @@ The container binds to the port from `CAMOFOX_URL` (default 9377). By default th
 
 ### Multi-agent / shared-host deployment
 
+> Full step-by-step procedure (provisioning users, key rotation, redeploy, security
+> checklist): **[docs/multi-agent-sop.md](docs/multi-agent-sop.md)**.
+
 To run **one instance serving many bots on a networked host**, publish off-loopback and make it durable:
 
 ```bash
